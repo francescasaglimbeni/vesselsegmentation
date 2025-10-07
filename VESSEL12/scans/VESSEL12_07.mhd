@@ -1,0 +1,13 @@
+ObjectType = Image
+NDims = 3
+BinaryData = True
+BinaryDataByteOrderMSB = False
+CompressedData = False
+TransformMatrix = 1 0 0 0 1 0 0 0 1
+Offset = -178.125 -176.562 2410.5
+CenterOfRotation = 0 0 0
+AnatomicalOrientation = RAI
+ElementSpacing = 0.689 0.689 1
+DimSize = 512 512 461
+ElementType = MET_SHORT
+ElementDataFile = VESSEL12_07.raw
