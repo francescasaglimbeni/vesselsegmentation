@@ -30,10 +30,10 @@ def main():
     # Step 1: Convert to NIfTI
     print("=== Step 1: Converting MHD to NIfTI ===")
     nifti_path = convert_mhd_to_nifti(mhd_path, nifti_dir)
-
+    
     # Step 2: Run TotalSegmentator
     print("\n=== Step 2: Running TotalSegmentator ===")
-    # Use 'lung_vessels' task to get lung vessel structures
+    # Use 'total' task to get heart structures for A/V seed extraction
     totalsegmentator(nifti_path, seg_dir, task='lung_vessels')
     print("TotalSegmentator completed!")
     
