@@ -10,7 +10,7 @@ except Exception:
     from skimage.morphology import skeletonize
     _HAS_SKELETONIZE_3D = False
 
-from code_vesselsegmentation.preprocessing import create_spherical_kernel, extract_centerlines
+from code_vesselsegmentation_TS.preprocessing import create_spherical_kernel, extract_centerlines
 
 
 def find_seed_regions(seg_dir):
