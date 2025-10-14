@@ -34,7 +34,7 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path, extrac
             break
 
     if vessel_path is None:
-        return None, None
+        return None, None, None, None, None
 
     vessel_img = sitk.ReadImage(vessel_path)
     vessel_mask = sitk.GetArrayFromImage(vessel_img).astype(bool)
@@ -76,12 +76,27 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path, extrac
     output_path = os.path.join(output_dir, "lung_vessels_cleaned.nii.gz")
     sitk.WriteImage(vessel_clean_img, output_path)
 
+    # Save centerlines if extracted
+    centerlines_path = None
     if centerlines is not None:
         centerlines_img = sitk.GetImageFromArray(centerlines.astype(np.uint8))
         centerlines_img.CopyInformation(vessel_img)
         centerlines_path = os.path.join(output_dir, "vessel_centerlines.nii.gz")
         sitk.WriteImage(centerlines_img, centerlines_path)
-    else:
-        centerlines_path = None
 
-    return output_path, centerlines_path
+    # Save lung mask (eroded)
+    lung_mask_path = os.path.join(output_dir, "lung_mask_eroded.nii.gz")
+    lung_mask_img = sitk.GetImageFromArray(lung_mask_eroded.astype(np.uint8))
+    lung_mask_img.CopyInformation(vessel_img)
+    sitk.WriteImage(lung_mask_img, lung_mask_path)
+
+    # Save seed regions (artery and vein)
+    if artery_seed_path:
+        artery_seed_dest = os.path.join(output_dir, "seed_artery.nii.gz")
+        sitk.WriteImage(sitk.ReadImage(artery_seed_path), artery_seed_dest)
+
+    if vein_seed_path:
+        vein_seed_dest = os.path.join(output_dir, "seed_vein.nii.gz")
+        sitk.WriteImage(sitk.ReadImage(vein_seed_path), vein_seed_dest)
+
+    return output_path, centerlines_path, lung_mask_path, artery_seed_path, vein_seed_path
