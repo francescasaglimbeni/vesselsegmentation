@@ -24,7 +24,7 @@ from code_vesselsegmentation_VF.lung_airway import (
 MODE = "VS"   # "TS" oppure "VS"
 
 # -- Path comuni
-MHD_PATH = "/content/vesselsegmentation/CARVE14/1.2.840.113704.1.111.208.1137518216.7.mhd"
+MHD_PATH = "CARVE14/1.2.840.113704.1.111.208.1137518216.7.mhd"
 
 # -- TS config
 NIFTI_DIR = "nifti_scans"
@@ -140,18 +140,12 @@ def run_ts_pipeline(mhd_path: str,
         return
 
 
-# ===================================
-#   Utility scale
-# ===================================
 def build_scales(spacing, num_scales=7, sigma_min_mm=None, sigma_max_mm=4.5):
     if sigma_min_mm is None:
         sigma_min_mm = min(spacing)  # mm del voxel più piccolo
-    return np.geom_space(sigma_min_mm, sigma_max_mm, num_scales)
+    return np.geomspace(sigma_min_mm, sigma_max_mm, num_scales)
 
 
-# ===================================
-#   Pipeline VS (vesselsFilter)
-# ===================================
 def run_vs_pipeline(mhd_path: str,
                     out_mask_path: str,
                     num_scales: int = 7,

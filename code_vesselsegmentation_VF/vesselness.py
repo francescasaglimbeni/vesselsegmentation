@@ -26,16 +26,21 @@ def hessian_eigen(img, sigma_mm, spacing):
     # reshape to (N,3,3)
     H2 = H.reshape(-1,3,3)
     # eigh for symmetric matrices
-    w, v = np.linalg.eigh(H2)
+    w, v = np.linalg.eigh(H2)  # w shape (N,3), v shape (N,3,3) where v[i,:,j] is eigenvector j for matrix i
     # sort eigenvalues by absolute value ascending so that |λ1| <= |λ2| <= |λ3|
-    idx = np.argsort(np.abs(w), axis=1)
-    rows = np.arange(w.shape[0])[:,None]
-    w_sorted = w[rows, idx]
-    v_sorted = v[rows, :, :][rows, :, idx]
-    lam1 = w_sorted[:,0].reshape(shp)
-    lam2 = w_sorted[:,1].reshape(shp)
-    lam3 = w_sorted[:,2].reshape(shp)
-    e1 = v_sorted[:,:,0].reshape(shp+(3,))  # eigenvector for smallest |λ| (vessel axis)
+    idx = np.argsort(np.abs(w), axis=1)  # shape (N,3) indices per row
+    # Use take_along_axis to reorder eigenvalues along last axis
+    w_sorted = np.take_along_axis(w, idx, axis=1)  # shape (N,3)
+    # For eigenvectors, we need to reorder the last axis (eigenvector axis)
+    # prepare indices for take_along_axis with shape (N,1,3) to broadcast over the vector components
+    idx_expanded = idx[:, None, :]  # shape (N,1,3)
+    v_sorted = np.take_along_axis(v, idx_expanded, axis=2)  # shape (N,3,3)
+    # Extract lambdas and first eigenvector
+    lam1 = w_sorted[:, 0].reshape(shp)
+    lam2 = w_sorted[:, 1].reshape(shp)
+    lam3 = w_sorted[:, 2].reshape(shp)
+    # v_sorted[..., 0] is the eigenvector corresponding to smallest |lambda|
+    e1 = v_sorted[:, :, 0].reshape(shp + (3,))
     return lam1, lam2, lam3, e1
 
 def frangi_vesselness(img_hu, spacing, sigmas_mm, alpha=0.5, beta=0.5, c=70.0):
