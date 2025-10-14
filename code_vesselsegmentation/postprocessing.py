@@ -2,7 +2,6 @@ import os
 import numpy as np
 import SimpleITK as sitk
 from scipy import ndimage
-from skimage.morphology import skeletonize_3d
 from code_vesselsegmentation.preprocessing import create_spherical_kernel, extract_centerlines
 
 def find_seed_regions(seg_dir):
