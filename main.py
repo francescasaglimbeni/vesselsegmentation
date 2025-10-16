@@ -6,7 +6,7 @@ import tempfile
 
 def main():
     # Paths
-    mhd_path = '/content/vesselsegmentation/CARVE14/1.2.840.113704.1.111.208.1137518216.7.mhd'
+    mhd_path = '/content/vesselsegmentation/CARVE14/1.2.840.113704.1.111.2604.1126357612.7.mhd'
     output_dir = 'vessels_cleaned'
 
     # Step 1: Convert to NIfTI (using temporary directory)
