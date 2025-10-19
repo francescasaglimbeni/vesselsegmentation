@@ -361,6 +361,5 @@ if os.path.exists(segmentation_path) and os.path.exists(annotation_path):
         save_json=True
     )
 else:
-    # Nessun print: solleva eccezione per gestione a monte
     raise FileNotFoundError(f"Missing file(s). "
                             f"Segmentation: {segmentation_path} | Annotation: {annotation_path}")

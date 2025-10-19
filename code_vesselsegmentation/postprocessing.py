@@ -64,9 +64,7 @@ def adaptive_vessel_cleaning(vessel_mask, lung_mask, airway_mask, spacing,
     stats['airway_dilation_mm'] = airway_dilation_mm
     
     # 3. Se richiesto, identifica e preserva vasi grandi
-    if preserve_large_vessels:
-        print(f"  🔍 Identificazione vasi grandi (diametro > {large_vessel_threshold_mm}mm)...")
-        
+    if preserve_large_vessels:        
         # Identifica componenti connesse nei vasi originali
         labeled_vessels, num_vessels = ndimage.label(vessel_mask)
         
@@ -84,9 +82,7 @@ def adaptive_vessel_cleaning(vessel_mask, lung_mask, airway_mask, spacing,
         
         stats['num_large_vessels'] = len(large_vessel_labels)
         stats['num_total_vessels'] = num_vessels
-        
-        print(f"    Trovati {len(large_vessel_labels)} vasi grandi su {num_vessels} totali")
-        
+                
         # Per vasi grandi: usa erosione minima o nessuna erosione
         # Erosione molto conservativa solo per rimuovere rumore pleura
         minimal_erosion_kernel = create_spherical_kernel(0.5, spacing)  # Solo 0.5mm
@@ -207,7 +203,6 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path,
         # Threshold by voxel count
         if min_vessel_voxels is not None:
             keep_mask &= (sizes >= float(min_vessel_voxels))
-            print(f"  Filtering by min voxels: {min_vessel_voxels}")
 
         # Threshold by estimated physical diameter (mm)
         if min_vessel_diameter_mm is not None:
@@ -215,7 +210,6 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path,
             volumes_mm3 = sizes * voxel_volume_mm3
             equiv_diam_mm = 2.0 * ((3.0 * volumes_mm3 / (4.0 * np.pi)) ** (1.0 / 3.0))
             keep_mask &= (equiv_diam_mm >= float(min_vessel_diameter_mm))
-            print(f"  Filtering by min diameter: {min_vessel_diameter_mm}mm")
 
         keep_labels = (np.where(keep_mask)[0] + 1).tolist()
         voxels_before = int(vessel_clean.sum())
