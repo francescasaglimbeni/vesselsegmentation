@@ -50,12 +50,10 @@ def adaptive_vessel_cleaning(vessel_mask, lung_mask, airway_mask, spacing,
                              preserve_large_vessels=True, large_vessel_threshold_mm=5.0):
     stats = {}
     
-    # 1. Erodi polmoni (più conservativo: 2mm invece di 3mm)
     erode_kernel = create_spherical_kernel(lung_erosion_mm, spacing)
     lung_mask_eroded = ndimage.binary_erosion(lung_mask, structure=erode_kernel)
     stats['lung_erosion_mm'] = lung_erosion_mm
     
-    # 2. Dilata vie aeree per esclusione
     if airway_mask.any():
         airway_kernel = create_spherical_kernel(airway_dilation_mm, spacing)
         airway_mask_dilated = ndimage.binary_dilation(airway_mask, structure=airway_kernel)
@@ -83,26 +81,20 @@ def adaptive_vessel_cleaning(vessel_mask, lung_mask, airway_mask, spacing,
         stats['num_large_vessels'] = len(large_vessel_labels)
         stats['num_total_vessels'] = num_vessels
                 
-        # Per vasi grandi: usa erosione minima o nessuna erosione
-        # Erosione molto conservativa solo per rimuovere rumore pleura
-        minimal_erosion_kernel = create_spherical_kernel(0.5, spacing)  # Solo 0.5mm
+        minimal_erosion_kernel = create_spherical_kernel(0.5, spacing)  
         lung_mask_minimal = ndimage.binary_erosion(lung_mask, structure=minimal_erosion_kernel)
         
-        # Pulisci vasi grandi con criteri più permissivi
         large_vessels_clean = large_vessel_mask & lung_mask_minimal & ~airway_mask_dilated
         
-        # Pulisci vasi piccoli con criteri standard
         small_vessel_mask = vessel_mask & ~large_vessel_mask
         small_vessels_clean = small_vessel_mask & lung_mask_eroded & ~airway_mask_dilated
         
-        # Combina
         vessel_clean = large_vessels_clean | small_vessels_clean
         
         stats['large_vessels_voxels'] = int(large_vessels_clean.sum())
         stats['small_vessels_voxels'] = int(small_vessels_clean.sum())
         
     else:
-        # Pulizia standard senza preservazione speciale
         vessel_clean = vessel_mask & lung_mask_eroded & ~airway_mask_dilated
         stats['num_large_vessels'] = 0
         stats['num_total_vessels'] = 0
