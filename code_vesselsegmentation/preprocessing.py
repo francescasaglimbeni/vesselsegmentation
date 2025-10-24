@@ -37,8 +37,6 @@ def convert_mhd_to_nifti(mhd_path, output_dir):
     
     return nifti_path
 
-convert_mhd_to_nifti('CARVE14/1.2.840.113704.1.111.1396.1132404220.7.mhd', 'nifti_output')
-
 def create_spherical_kernel(radius_mm, spacing):
     """
     Create a spherical structuring element based on physical spacing.
