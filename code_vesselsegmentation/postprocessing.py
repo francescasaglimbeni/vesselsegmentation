@@ -211,12 +211,11 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path,
             vessel_clean,
             spacing,
             max_gap_mm=max_gap_mm,
-            min_isolated_size=20,  # Hardcoded: ignora noise
-            max_isolated_size=100,  # Hardcoded: solo frammenti piccoli
+            min_isolated_size=20,  
+            max_isolated_size=100,
             max_connection_distance_mm=max_connection_distance_mm
         )
         
-        # Salva maschera pre-reconnection per confronto
         vessel_before_img = sitk.GetImageFromArray(vessel_before_reconnect.astype(np.uint8))
         vessel_before_img.CopyInformation(vessel_img)
         sitk.WriteImage(vessel_before_img, 

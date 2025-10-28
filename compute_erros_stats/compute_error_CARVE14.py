@@ -20,7 +20,7 @@ def load_carve_annotation(annotation_path):
     return annotation_array, annotation_img
 
 
-def compare_segmentation_with_annotations(segmentation_path, annotation_array, 
+def compare_segmentation_with_annotations(segmentation_path, annotation_array, annotation_img=None,
                                           annotation_type='carve', only_annotated=True):
     # Carica la segmentazione
     segmentation_img = sitk.ReadImage(segmentation_path)
@@ -33,9 +33,11 @@ def compare_segmentation_with_annotations(segmentation_path, annotation_array,
         print(f"  Annotazioni: {annotation_array.shape}")
         
         # Ridimensiona se necessario (usa nearest neighbor per mantenere labels)
+        # Usa l'immagine di annotazione come riferimento quando disponibile (mantiene spacing/origin)
+        reference_img = annotation_img if annotation_img is not None else sitk.GetImageFromArray(annotation_array)
         seg_img_resampled = sitk.Resample(
             segmentation_img,
-            sitk.GetImageFromArray(annotation_array),
+            reference_img,
             sitk.Transform(),
             sitk.sitkNearestNeighbor,
             0.0,
@@ -158,10 +160,11 @@ def evaluate_carve(segmentation_path, annotation_path, exclude_unknown=True):
     print(f"Annotazioni: {annotation_path}")
     print(f"Esclude unknown (-999): {exclude_unknown}")
     
-    annotation_array, _ = load_carve_annotation(annotation_path)
+    annotation_array, annotation_img = load_carve_annotation(annotation_path)
     metrics = compare_segmentation_with_annotations(
-        segmentation_path, 
-        annotation_array, 
+        segmentation_path,
+        annotation_array,
+        annotation_img,
         annotation_type='carve',
         only_annotated=exclude_unknown
     )
