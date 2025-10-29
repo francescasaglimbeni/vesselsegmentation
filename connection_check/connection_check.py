@@ -354,44 +354,43 @@ def print_global_summary(global_stats):
         print(f"  Conservative (top 10%): large_vessel_threshold_mm = {np.percentile(all_diameters, 90):.1f}")
         print(f"  Moderate (top 25%):     large_vessel_threshold_mm = {np.percentile(all_diameters, 75):.1f}")
 
-def main():
-    """
-    Funzione principale per analizzare l'intera cartella.
-    """
-    # Configurazione paths
-    base_dir = '/content/vesselsegmentation/vessels_cleaned'
-    spacing = (0.625, 0.625, 0.625)
+"""
+Funzione principale per analizzare l'intera cartella.
+"""
+# Configurazione paths
+base_dir = '/content/vesselsegmentation/vessels_cleaned'
+spacing = (0.7, 0.7, 0.7)
+
+# Trova tutti i file vessels cleaned
+vessel_files = glob.glob(os.path.join(base_dir, '*_cleaned.nii.gz'))
+
+print(f"Found {len(vessel_files)} vessel files to analyze")
+
+global_stats = []
+
+for vessel_path in vessel_files:
+    # Costruisci il path della centerline corrispondente
+    base_name = vessel_path.replace('_cleaned.nii.gz', '')
+    centerline_path = base_name + '_centerlines.nii.gz'
     
-    # Trova tutti i file vessels cleaned
-    vessel_files = glob.glob(os.path.join(base_dir, '*_cleaned.nii.gz'))
+    # Analizza distanze
+    distance_stats = analyze_component_distances(vessel_path, spacing)
     
-    print(f"Found {len(vessel_files)} vessel files to analyze")
+    # Analizza diametri
+    diameter_stats = None
+    if os.path.exists(centerline_path):
+        diameter_stats = analyze_vessel_diameters(vessel_path, centerline_path, spacing)
     
-    global_stats = []
-    
-    for vessel_path in vessel_files:
-        # Costruisci il path della centerline corrispondente
-        base_name = vessel_path.replace('_cleaned.nii.gz', '')
-        centerline_path = base_name + '_centerlines.nii.gz'
-        
-        # Analizza distanze
-        distance_stats = analyze_component_distances(vessel_path, spacing)
-        
-        # Analizza diametri
-        diameter_stats = None
-        if os.path.exists(centerline_path):
-            diameter_stats = analyze_vessel_diameters(vessel_path, centerline_path, spacing)
-        
-        # Combina le statistiche
-        if distance_stats:
-            if diameter_stats:
-                distance_stats['diameter_stats'] = diameter_stats
-            global_stats.append(distance_stats)
-    
-    # Genera report globale
-    if global_stats:
-        print_global_summary(global_stats)
-        create_global_plots(global_stats)
-        print(f"\nAnalysis complete! Processed {len(global_stats)} cases.")
-    else:
-        print("No valid cases found for analysis.")
+    # Combina le statistiche
+    if distance_stats:
+        if diameter_stats:
+            distance_stats['diameter_stats'] = diameter_stats
+        global_stats.append(distance_stats)
+
+# Genera report globale
+if global_stats:
+    print_global_summary(global_stats)
+    create_global_plots(global_stats)
+    print(f"\nAnalysis complete! Processed {len(global_stats)} cases.")
+else:
+    print("No valid cases found for analysis.")
