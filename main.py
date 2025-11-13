@@ -49,11 +49,7 @@ def process_single_scan(mhd_path, output_dir):
             airway_dilation_mm=4.0,
             preserve_large_vessels=True,
             large_vessel_threshold_mm=2.5,            
-            extract_skeleton=True,
-            enable_reconnection=False,
-            max_gap_mm=1.5,
-            max_connection_distance_mm=3.0,
-            use_centerline_reconnection=False
+            extract_skeleton=True
         )
 
         if cleaned_path is None:

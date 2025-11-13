@@ -3,11 +3,6 @@ import numpy as np
 import SimpleITK as sitk
 from scipy import ndimage
 from code_vesselsegmentation.preprocessing import create_spherical_kernel, extract_centerlines
-from code_vesselsegmentation.vessel_reconnection import (
-    reconnect_isolated_vessels, 
-    advanced_reconnection_with_centerlines
-)
-
 
 def find_seed_regions(seg_dir):
     seed_candidates = {
@@ -124,12 +119,8 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path,
                                 extract_skeleton=True,
                                 lung_erosion_mm=1.0,
                                 airway_dilation_mm=3.0,
-                                preserve_large_vessels=True,
-                                large_vessel_threshold_mm=2.5,
-                                enable_reconnection=True,
-                                max_gap_mm=0.5,
-                                max_connection_distance_mm=2.0,
-                                use_centerline_reconnection=False):
+                                preserve_large_vessels=True, 
+                                large_vessel_threshold_mm=2.5):
     
     # Leggi immagine originale per spacing
     original_img = sitk.ReadImage(original_image_path)
@@ -200,26 +191,7 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path,
         airways_dil_img.CopyInformation(vessel_img)
         sitk.WriteImage(airways_dil_img, 
                        os.path.join(output_dir, "airways_dilated_for_cleaning.nii.gz"))
-    reconnection_stats = {}
-    
-    if enable_reconnection:
-        # Salva stato pre-reconnection per QC
-        vessel_before_reconnect = vessel_clean.copy()
-        
-        # Applica reconnection BASE (conservativa)
-        vessel_clean, reconnection_stats = reconnect_isolated_vessels(
-            vessel_clean,
-            spacing,
-            max_gap_mm=max_gap_mm,
-            min_isolated_size=20,  
-            max_isolated_size=100,
-            max_connection_distance_mm=max_connection_distance_mm
-        )
-        
-        vessel_before_img = sitk.GetImageFromArray(vessel_before_reconnect.astype(np.uint8))
-        vessel_before_img.CopyInformation(vessel_img)
-        sitk.WriteImage(vessel_before_img, 
-                       os.path.join(output_dir, "vessels_before_reconnection.nii.gz"))
+    # No reconnection step: proceed with cleaned vessels
     
     labeled, num_features = ndimage.label(vessel_clean)
     
@@ -253,19 +225,6 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path,
     
     if extract_skeleton:
         centerlines = extract_centerlines(vessel_clean, spacing=spacing)
-        
-        if enable_reconnection and use_centerline_reconnection and centerlines is not None:
-            
-            vessel_clean, centerline_reconnect_stats = advanced_reconnection_with_centerlines(
-                vessel_clean,
-                centerlines,
-                spacing,
-                max_gap_mm=1.0,  # Leggermente più permissivo per centerlines
-                search_radius_mm=5.0
-            )
-
-            # Rigenera centerlines dopo reconnection
-            centerlines = extract_centerlines(vessel_clean, spacing=spacing)
     
     # Cerca seed regions
     artery_seed_path, vein_seed_path = find_seed_regions(seg_dir)
@@ -308,9 +267,5 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path,
         sitk.WriteImage(sitk.ReadImage(vein_seed_path), vein_seed_dest)
     for key, value in cleaning_stats.items():
         print(f"  {key}: {value}")
-    
-    if reconnection_stats:
-        for key, value in reconnection_stats.items():
-            print(f"  {key}: {value}")
     
     return vessels_out_path, centerlines_path, lung_mask_path, artery_seed_path, vein_seed_path
