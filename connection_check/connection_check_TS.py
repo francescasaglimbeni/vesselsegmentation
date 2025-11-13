@@ -1,257 +1,265 @@
-"""
-Analisi vasi polmonari: Diameter Analysis - FIXED VERSION
-Correzioni applicate:
-1. Snap della centerline ai massimi locali della Distance Transform
-2. Filtraggio dei punti fuori dal vaso
-3. Ricampionamento uniforme delle polylines
-"""
 import numpy as np
 import SimpleITK as sitk
 from scipy import ndimage
 from scipy.interpolate import splprep, splev
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 import pandas as pd
 import kimimaro
+from collections import defaultdict
 
-LABEL_NAMES = {1: 'Vessels'}  # Per TS: solo 0 (background) e 1 (vasi)
+LABEL_NAMES = {1: 'Vessels'}
 
 def snap_to_medial_axis(coords, distance_transform, max_search_radius=3):
-    """
-    Sposta ogni punto della centerline verso il massimo locale della DT.
-
-    Args:
-        coords: Array (N, 3) di coordinate in voxel space (z, y, x)
-        distance_transform: 3D array con la distance transform
-        max_search_radius: Raggio di ricerca in voxel per il massimo locale
-
-    Returns:
-        Array (N, 3) di coordinate corrette
-    """
     snapped_coords = []
     shape = distance_transform.shape
-
+    
     for coord in coords:
         z, y, x = coord
-
-        # Definisci finestra di ricerca
+        
         z_min = max(0, z - max_search_radius)
         z_max = min(shape[0], z + max_search_radius + 1)
         y_min = max(0, y - max_search_radius)
         y_max = min(shape[1], y + max_search_radius + 1)
         x_min = max(0, x - max_search_radius)
         x_max = min(shape[2], x + max_search_radius + 1)
-
-        # Estrai patch locale
+        
         local_patch = distance_transform[z_min:z_max, y_min:y_max, x_min:x_max]
-
+        
         if local_patch.size == 0:
             snapped_coords.append(coord)
             continue
-
-        # Trova massimo locale
+        
         max_idx = np.unravel_index(np.argmax(local_patch), local_patch.shape)
-
-        # Converti in coordinate globali
+        
         snapped_z = z_min + max_idx[0]
         snapped_y = y_min + max_idx[1]
         snapped_x = x_min + max_idx[2]
-
+        
         snapped_coords.append([snapped_z, snapped_y, snapped_x])
-
+    
     return np.array(snapped_coords, dtype=int)
 
 
-def resample_polyline(coords, spacing, step_mm=0.5):
-    """
-    Ricampiona una polyline ad intervalli regolari.
-
-    Args:
-        coords: Array (N, 3) di coordinate in voxel space
-        spacing: Tuple (sz, sy, sx) in mm
-        step_mm: Distanza in mm tra i punti ricampionati
-
-    Returns:
-        Array (M, 3) di coordinate ricampionate (M può essere diverso da N)
-    """
-    if len(coords) < 4:
-        return coords
-
-    # Converti in mm
-    coords_mm = coords * np.array(spacing)
-
-    try:
-        # Parametrizzazione spline (k=3 richiede almeno 4 punti)
-        tck, u = splprep([coords_mm[:, 0], coords_mm[:, 1], coords_mm[:, 2]],
-                         s=0, k=min(3, len(coords) - 1))
-
-        # Calcola lunghezza totale approssimativa
-        total_length = np.sum(np.linalg.norm(np.diff(coords_mm, axis=0), axis=1))
-
-        # Numero di punti da campionare
-        n_points = max(int(total_length / step_mm), 2)
-
-        # Ricampiona
-        u_new = np.linspace(0, 1, n_points)
-        resampled_mm = np.array(splev(u_new, tck)).T
-
-        # Riconverti in voxel space
-        resampled_voxel = np.round(resampled_mm / np.array(spacing)).astype(int)
-
-        return resampled_voxel
-
-    except Exception as e:
-        # Fallback: ritorna coordinate originali
-        print(f"  Warning: Resampling failed ({e}), using original coords")
-        return coords
+def detect_bifurcations(skeleton_obj, coords, distance_transform):
+    bifurcation_coords = []
+    bifurcation_radii = []
+    
+    if not hasattr(skeleton_obj, 'edges') or len(skeleton_obj.edges) == 0:
+        return np.array([]), np.array([]), 0
+    
+    # Conta quante edges partono da ogni vertice
+    vertex_degree = defaultdict(int)
+    for edge in skeleton_obj.edges:
+        vertex_degree[edge[0]] += 1
+        vertex_degree[edge[1]] += 1
+    
+    # Biforcazioni = vertici con degree >= 3
+    for vertex_idx, degree in vertex_degree.items():
+        if degree >= 3:
+            if vertex_idx < len(skeleton_obj.vertices):
+                coord = skeleton_obj.vertices[vertex_idx].astype(int)
+                # Verifica che le coordinate siano valide
+                if (0 <= coord[0] < distance_transform.shape[0] and
+                    0 <= coord[1] < distance_transform.shape[1] and
+                    0 <= coord[2] < distance_transform.shape[2]):
+                    
+                    bifurcation_coords.append(coord)
+                    radius = distance_transform[coord[0], coord[1], coord[2]]
+                    bifurcation_radii.append(radius)
+    
+    bifurcation_coords = np.array(bifurcation_coords) if bifurcation_coords else np.array([]).reshape(0, 3)
+    bifurcation_radii = np.array(bifurcation_radii) if bifurcation_radii else np.array([])
+    
+    return bifurcation_coords, bifurcation_radii, len(bifurcation_coords)
 
 
-def extract_centerline_coords(binary_mask: np.ndarray, spacing):
-    """
-    Estrae centerline con Kimimaro e applica correzioni.
-    """
+def count_connected_components(binary_mask):
+    """Conta il numero di oggetti connessi nella maschera."""
+    labeled_array, num_features = ndimage.label(binary_mask)
+    return num_features
+
+
+def extract_centerline_coords_enhanced(binary_mask: np.ndarray, spacing):
     coords_list = []
-
+    skeleton_objects = []
+    
     lbl = binary_mask.astype(np.uint32)
-
+    
     skels = kimimaro.skeletonize(
         lbl,
         anisotropy=spacing,
-        dust_threshold=50,  # Rimuovi componenti troppo piccole
+        dust_threshold=10,
         fix_branching=True,
         progress=False
     )
-
+    
     for s in skels.values():
         if hasattr(s, "vertices") and len(s.vertices) > 0:
             coords_list.append(np.asarray(s.vertices, dtype=int))
-
+            skeleton_objects.append(s)
+    
     backend_used = "kimimaro"
-
+    
     if not coords_list:
-        return np.empty((0, 3), dtype=int), backend_used, 0
-
-    # Conta componenti estratte
+        return np.empty((0, 3), dtype=int), [], backend_used, 0
+    
     n_components = len(coords_list)
-
-    # Concatena
     all_coords = np.vstack(coords_list)
+    
+    return all_coords, skeleton_objects, backend_used, n_components
 
-    return all_coords, backend_used, n_components
 
-
-def sample_centerline_diameters_fixed(mask_bool: np.ndarray, spacing):
-    """
-    Calcola i diametri sulla centerline con correzioni:
-    1. Snap to medial axis
-    2. Filtraggio punti fuori dal vaso
-    3. Ricampionamento uniforme
-    """
+def sample_centerline_diameters_enhanced(mask_bool: np.ndarray, spacing):
     if not np.any(mask_bool):
         return np.array([]), None, {}
-
+    
+    # Conta componenti connesse
+    n_objects = count_connected_components(mask_bool)
+    
     # Calcola Distance Transform
     DT = ndimage.distance_transform_edt(mask_bool, sampling=spacing)
-
-    # Estrai centerline
-    cl_coords, backend_used, n_components = extract_centerline_coords(mask_bool, spacing)
-
+    
+    # Estrai centerline con oggetti skeleton
+    cl_coords, skeleton_objects, backend_used, n_components = extract_centerline_coords_enhanced(mask_bool, spacing)
+    
+    # Rileva biforcazioni
+    all_bifurcation_coords = []
+    all_bifurcation_radii = []
+    total_bifurcations = 0
+    
+    for skel_obj in skeleton_objects:
+        bif_coords, bif_radii, n_bif = detect_bifurcations(skel_obj, cl_coords, DT)
+        if n_bif > 0:
+            all_bifurcation_coords.append(bif_coords)
+            all_bifurcation_radii.append(bif_radii)
+            total_bifurcations += n_bif
+    
+    bifurcation_coords = np.vstack(all_bifurcation_coords) if all_bifurcation_coords else np.array([]).reshape(0, 3)
+    bifurcation_radii = np.concatenate(all_bifurcation_radii) if all_bifurcation_radii else np.array([])
+    
     stats = {
+        'n_objects': n_objects,
         'n_components': n_components,
+        'n_bifurcations': total_bifurcations,
+        'bifurcation_coords': bifurcation_coords,
+        'bifurcation_radii': bifurcation_radii,
+        'bifurcation_diameters': 2.0 * bifurcation_radii,
         'n_points_raw': len(cl_coords),
         'n_points_snapped': 0,
         'n_points_filtered': 0,
-        'n_points_resampled': 0
+        'skeleton_coords': cl_coords,
     }
-
+    
     if cl_coords.shape[0] == 0:
         return np.array([]), backend_used, stats
-
+    
     print(f"    Raw centerline points: {len(cl_coords):,}")
-
-    # STEP 1: Snap to medial axis
+    print(f"    Connected objects: {n_objects}")
+    print(f"    Skeleton components: {n_components}")
+    print(f"    Bifurcations detected: {total_bifurcations}")
+    
+    # Snap to medial axis
     cl_coords_snapped = snap_to_medial_axis(cl_coords, DT, max_search_radius=3)
     stats['n_points_snapped'] = len(cl_coords_snapped)
     print(f"    After snapping: {len(cl_coords_snapped):,}")
-
-    # STEP 2: Filtra punti fuori dal vaso (DT troppo piccola)
+    
+    # Filtra punti fuori dal vaso
     radii = DT[cl_coords_snapped[:, 0], cl_coords_snapped[:, 1], cl_coords_snapped[:, 2]]
-    valid_mask = radii > 0.25  # Soglia: raggio > 0.25 mm
+    valid_mask = radii > 0.10
     cl_coords_filtered = cl_coords_snapped[valid_mask]
     radii_filtered = radii[valid_mask]
     stats['n_points_filtered'] = len(cl_coords_filtered)
-    print(f"    After filtering (r > 0.25mm): {len(cl_coords_filtered):,}")
-
+    stats['radii'] = radii_filtered    
     if len(cl_coords_filtered) == 0:
         return np.array([]), backend_used, stats
-
-    # STEP 3: Ricampiona (opzionale, utile per polylines molto dense o sparse)
-    # Dividi per componenti e ricampiona separatamente
-    # Per semplicità, qui ricampiono tutto insieme
-    # In alternativa, potresti tracciare le componenti separate e ricampionarle una per una
-
-    # Usa i punti filtrati direttamente (ricampionamento opzionale)
+    
     diameters = 2.0 * radii_filtered
     stats['n_points_resampled'] = len(diameters)
-
+    
     return diameters, backend_used, stats
 
 
-def analyze_diameters(mask_path, spacing=None, diameter_method='centerline'):
-    """
-    Analizza distribuzione dei diametri dei vasi.
-    """
-    print(f"\n{'='*70}")
-    print(f"DIAMETER ANALYSIS ({diameter_method.upper()}) - FIXED VERSION")
-    print(f"{'='*70}")
+def visualize_skeleton_3d(skeleton_coords, bifurcation_coords, spacing, label_name, output_file):
+    if len(skeleton_coords) == 0:
+        print(f"    ⚠️  No skeleton to visualize for {label_name}")
+        return
+    
+    fig = plt.figure(figsize=(12, 10))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Converti in coordinate fisiche (mm)
+    skel_mm = skeleton_coords * np.array(spacing)
+    
+    # Plot skeleton (sottocampionato per performance)
+    step = max(1, len(skel_mm) // 5000)
+    ax.scatter(skel_mm[::step, 2], skel_mm[::step, 1], skel_mm[::step, 0], 
+               c='blue', marker='.', s=1, alpha=0.3, label='Centerline')
+    
+    # Plot biforcazioni
+    if len(bifurcation_coords) > 0:
+        bif_mm = bifurcation_coords * np.array(spacing)
+        ax.scatter(bif_mm[:, 2], bif_mm[:, 1], bif_mm[:, 0],
+                   c='red', marker='o', s=50, alpha=0.8, label='Bifurcations')
+    
+    ax.set_xlabel('X (mm)')
+    ax.set_ylabel('Y (mm)')
+    ax.set_zlabel('Z (mm)')
+    ax.set_title(f'{label_name} - 3D Skeleton Visualization')
+    ax.legend()
+    
+    plt.savefig(output_file, dpi=150, bbox_inches='tight')
+    plt.close()
 
+
+def analyze_diameters(mask_path, spacing=None, diameter_method='centerline'):
     try:
         img = sitk.ReadImage(mask_path)
         mask_data = sitk.GetArrayFromImage(img)
-
+        
         if spacing is None:
             spacing = img.GetSpacing()[::-1]
             print(f"Spacing from file: {spacing} mm")
         else:
             print(f"Using manual spacing: {spacing} mm")
-
+        
         unique_labels = np.unique(mask_data)
         print(f"\nLabels found in mask: {unique_labels}")
-
+        
         results = {}
 
-        # Analizza tutti i label definiti in LABEL_NAMES
-        for label in LABEL_NAMES.keys():
+        for label in [1, 2]:
+            if label not in LABEL_NAMES:
+                continue
+                
             label_name = LABEL_NAMES[label]
             mask = (mask_data == label)
 
             if not np.any(mask):
                 print(f"\n{label_name}: ⚠️  No voxels found")
+                results[label] = None
                 continue
 
             print(f"\n{label_name}:")
             print(f"{'-'*60}")
 
             if diameter_method == 'centerline':
-                diameters, backend_used, stats = sample_centerline_diameters_fixed(mask, spacing)
+                diameters, backend_used, stats = sample_centerline_diameters_enhanced(mask, spacing)
 
                 if diameters.size == 0:
                     print(f"  ⚠️ Centerline vuota. Fallback su all_voxels.")
                     dist_transform = ndimage.distance_transform_edt(mask, sampling=spacing)
                     diameters = 2.0 * dist_transform[mask]
                     backend_used = "fallback:all_voxels"
-                    stats = {}
+                    stats = {'n_objects': count_connected_components(mask)}
                 else:
-                    print(f"  ✓ Centerline fixed - Stats:")
-                    print(f"    Components: {stats.get('n_components', 'N/A')}")
-                    print(f"    Final points: {stats.get('n_points_filtered', len(diameters)):,}")
+                    print(f"  ✓ Enhanced analysis complete")
             else:
-                # All voxels method
                 dist_transform = ndimage.distance_transform_edt(mask, sampling=spacing)
                 diameters = 2.0 * dist_transform[mask]
                 backend_used = "all_voxels"
-                stats = {}
+                stats = {'n_objects': count_connected_components(mask)}
 
-            # Filtra outliers estremi (opzionale)
             diameters_filtered = diameters[(diameters > 0.3) & (diameters < 20)]
 
             def pct(x):
@@ -273,27 +281,43 @@ def analyze_diameters(mask_path, spacing=None, diameter_method='centerline'):
                 'p75': float(np.percentile(diameters, 75)) if diameters.size else 0.0,
                 'p90': float(np.percentile(diameters, 90)) if diameters.size else 0.0,
                 'pct_very_small': pct(diameters < 1.0),
-                'pct_small': pct(diameters < 2.0),
+                'pct_small': pct((diameters >= 1.0) & (diameters < 2.0)),
                 'pct_medium': pct((diameters >= 2.0) & (diameters < 5.0)),
                 'pct_large': pct(diameters >= 5.0),
+                'n_sampled_points': len(diameters)
             }
 
-            print(f"\n  Results:")
+            print(f"\n  Topological Results:")
+            print(f"    Connected objects: {stats.get('n_objects', 'N/A')}")
+            print(f"    Skeleton components: {stats.get('n_components', 'N/A')}")
+            print(f"    Bifurcations: {stats.get('n_bifurcations', 0)}")
+            if stats.get('n_bifurcations', 0) > 0:
+                bif_diams = stats.get('bifurcation_diameters', np.array([]))
+                if len(bif_diams) > 0:
+                    print(f"    Bifurcation diameters: {bif_diams.mean():.2f} ± {bif_diams.std():.2f} mm")
+                    print(f"    Bifurcation diameter range: {bif_diams.min():.2f} - {bif_diams.max():.2f} mm")
+            
+            print(f"\n  Diameter Results:")
             print(f"    Backend: {backend_used}")
-            print(f"    Sample points: {len(diameters):,}")
+            print(f"    Sample points: {results[label]['n_sampled_points']:,}")
             print(f"    Diameter range: {results[label]['min']:.2f} - {results[label]['max']:.2f} mm")
             print(f"    Mean: {results[label]['mean']:.2f} mm")
             print(f"    Median: {results[label]['median']:.2f} mm")
             print(f"    25th-75th percentile: {results[label]['p25']:.2f} - {results[label]['p75']:.2f} mm")
-            print(f"    90th percentile: {results[label]['p90']:.2f} mm")
-            print(f"\n  Size distribution:")
-            print(f"    Very small (<1mm): {results[label]['pct_very_small']:.1f}%")
-            print(f"    Small (1-2mm): {results[label]['pct_small'] - results[label]['pct_very_small']:.1f}%")
-            print(f"    Medium (2-5mm): {results[label]['pct_medium']:.1f}%")
-            print(f"    Large (>5mm): {results[label]['pct_large']:.1f}%")
+            
+            # Visualizza skeleton
+            if 'skeleton_coords' in stats and len(stats['skeleton_coords']) > 0:
+                skeleton_file = f"skeleton_3d_{label_name.lower()}.png"
+                visualize_skeleton_3d(
+                    stats['skeleton_coords'],
+                    stats.get('bifurcation_coords', np.array([])),
+                    spacing,
+                    label_name,
+                    skeleton_file
+                )
 
         return results
-
+    
     except Exception as e:
         print(f"❌ ERROR: {e}")
         import traceback
@@ -302,116 +326,101 @@ def analyze_diameters(mask_path, spacing=None, diameter_method='centerline'):
 
 
 def create_plots(diameter_stats, output_prefix="diameter_analysis"):
-    """Crea grafici di analisi dei diametri."""
     print(f"\n{'='*70}")
     print(f"CREATING PLOTS")
     print(f"{'='*70}")
-
-    if not diameter_stats or 1 not in diameter_stats:
+    
+    if not diameter_stats:
         print("⚠️  Insufficient data for plotting")
         return
-
-    diameters = diameter_stats[1]['all_diameters']
-
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-
-    # Histogram
-    axes[0].hist(diameters, bins=50, alpha=0.7, color='#3498db', edgecolor='black')
-    axes[0].set_xlabel('Diameter (mm)')
-    axes[0].set_ylabel('Frequency')
-    axes[0].set_title('Diameter Distribution - All Vessels')
-    axes[0].grid(True, alpha=0.3)
-    axes[0].set_xlim([0, 10])
-
-    # Box plot
-    bp = axes[1].boxplot([diameters], labels=['Vessels'],
-                         showfliers=False, patch_artist=True)
-    bp['boxes'][0].set_facecolor('#3498db')
-    bp['boxes'][0].set_alpha(0.7)
-
-    axes[1].set_ylabel('Diameter (mm)')
-    axes[1].set_title('Diameter Distribution (Box Plot)')
-    axes[1].grid(True, alpha=0.3, axis='y')
-
-    # CDF plot
-    diameters_sorted = np.sort(diameters)
-    cdf = np.arange(1, len(diameters_sorted) + 1) / len(diameters_sorted)
-
+    
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    colors = {'Arteries': '#e74c3c', 'Veins': '#3498db'}
+    
+    for idx, label in enumerate([1, 2]):
+        if label not in diameter_stats or diameter_stats[label] is None:
+            continue
+            
+        diam = diameter_stats[label]
+        label_name = diam['label_name']
+        diameters = diam['all_diameters']
+        color = colors.get(label_name, '#3498db')
+        
+        row = idx
+        
+        # Histogram
+        axes[row, 0].hist(diameters, bins=50, alpha=0.7, color=color, edgecolor='black')
+        axes[row, 0].set_xlabel('Diameter (mm)')
+        axes[row, 0].set_ylabel('Frequency')
+        axes[row, 0].set_title(f'{label_name} - Diameter Distribution')
+        axes[row, 0].grid(True, alpha=0.3)
+        axes[row, 0].set_xlim([0, 10])
+        
+        # Box plot
+        bp = axes[row, 1].boxplot([diameters], labels=[label_name], 
+                             showfliers=False, patch_artist=True)
+        bp['boxes'][0].set_facecolor(color)
+        bp['boxes'][0].set_alpha(0.7)
+        axes[row, 1].set_ylabel('Diameter (mm)')
+        axes[row, 1].set_title(f'{label_name} - Box Plot')
+        axes[row, 1].grid(True, alpha=0.3, axis='y')
+    
     plt.tight_layout()
-    plt.savefig(f'{output_prefix}_diameters_fixed.png', dpi=150, bbox_inches='tight')
-    print(f"  ✓ Saved: {output_prefix}_diameters_fixed.png")
+    plt.savefig(f'{output_prefix}_diameters_enhanced.png', dpi=150, bbox_inches='tight')
+    print(f"  ✓ Saved: {output_prefix}_diameters_enhanced.png")
     plt.close('all')
 
-
-def generate_summary_table(diameter_stats, output_file="diameter_analysis_summary.csv"):
-    """Genera tabella riassuntiva."""
+def print_final_summary(diameter_stats):
+    """Stampa il riepilogo finale."""
     print(f"\n{'='*70}")
-    print(f"GENERATING SUMMARY TABLE")
+    print(f"FINAL SUMMARY")
     print(f"{'='*70}")
-
-    rows = []
-
+    
+    if not diameter_stats:
+        print("No data available for summary")
+        return
+    
+    print("\nResults:")
     for label in [1, 2]:
-        if label not in diameter_stats:
-            continue
+        if label in diameter_stats and diameter_stats[label] is not None:
+            diam = diameter_stats[label]
+            stats = diam.get('processing_stats', {})
+            label_name = diam['label_name']
+            
+            print(f"\n- {label_name}:")
+            print(f"  • Connected objects: {stats.get('n_objects', 'N/A')}")
+            print(f"  • Skeleton components: {stats.get('n_components', 'N/A')}")
+            print(f"  • Bifurcations: {stats.get('n_bifurcations', 0)}")
+            if stats.get('n_bifurcations', 0) > 0:
+                bif_diams = stats.get('bifurcation_diameters', np.array([]))
+                if len(bif_diams) > 0:
+                    print(f"  • Bifurcation diameter: {bif_diams.mean():.2f} ± {bif_diams.std():.2f} mm")
+            print(f"  • Mean diameter: {diam['mean']:.2f} mm (range: {diam['min']:.2f}-{diam['max']:.2f} mm)")
+            print(f"  • Sampled points: {diam['n_sampled_points']:,}")
 
-        label_name = LABEL_NAMES[label]
-        diam = diameter_stats[label]
+mask_path = '/content/vesselsegmentation/CARVE14/1.2.840.113704.1.111.2604.1126357612_fullAnnotations.mhd'
+spacing = (0.7, 0.7, 0.7)
+output_prefix = "diameter_analysis_enhanced"
+DIAMETER_METHOD = 'centerline'
 
-        row = {
-            'Vessel_Type': label_name,
-            'Method': diam.get('method', 'n/a'),
-            'Backend': diam.get('diameter_backend', 'n/a'),
-            'N_Points': len(diam['all_diameters']),
-            'Min_mm': f"{diam['min']:.2f}",
-            'P25_mm': f"{diam['p25']:.2f}",
-            'Median_mm': f"{diam['median']:.2f}",
-            'Mean_mm': f"{diam['mean']:.2f}",
-            'P75_mm': f"{diam['p75']:.2f}",
-            'P90_mm': f"{diam['p90']:.2f}",
-            'Max_mm': f"{diam['max']:.2f}",
-            'Pct_VerySmall': f"{diam['pct_very_small']:.1f}%",
-            'Pct_Small': f"{diam['pct_small']:.1f}%",
-            'Pct_Medium': f"{diam['pct_medium']:.1f}%",
-            'Pct_Large': f"{diam['pct_large']:.1f}%",
-        }
-        rows.append(row)
+print("="*70)
+print("VESSEL DIAMETER ANALYSIS - ENHANCED VERSION")
+print("="*70)
+print(f"\nInput file: {mask_path}")
+print(f"Method: {DIAMETER_METHOD}")
+print("\nFeatures:")
+print("  ✓ Number of objects")
+print("  ✓ Radii analysis")
+print("  ✓ Bifurcation detection")
+print("  ✓ Radii across bifurcations")
+print("  ✓ 3D skeleton visualization")
 
-    if rows:
-        df = pd.DataFrame(rows)
-        df.to_csv(output_file, index=False)
-        print(f"  ✓ Saved: {output_file}")
-        print("\n" + df.to_string(index=False))
-    else:
-        print("  ⚠️  No data to save")
+diameter_stats = analyze_diameters(mask_path, spacing, diameter_method=DIAMETER_METHOD)
 
+if diameter_stats:
+    create_plots(diameter_stats, output_prefix)
+    print_final_summary(diameter_stats)
 
-# MAIN EXECUTION
-if __name__ == "__main__":
-    mask_path = '/content/use_it/1.2.840.113704.1.111.2604.1126357612.7_cleaned.nii.gz'
-    spacing = (0.7, 0.7, 0.7)
-    output_prefix = "diameter_analysis_fixed"
-
-    DIAMETER_METHOD = 'centerline'
-
-    print("="*70)
-    print("VESSEL DIAMETER ANALYSIS - FIXED VERSION")
-    print("="*70)
-    print(f"\nInput file: {mask_path}")
-    print(f"Method: {DIAMETER_METHOD}")
-    print("\nFixes applied:")
-    print("  1. ✓ Snap to medial axis")
-    print("  2. ✓ Filter points outside vessels")
-    print("  3. ✓ Improved component extraction")
-
-    # Analizza
-    diameter_stats = analyze_diameters(mask_path, spacing, diameter_method=DIAMETER_METHOD)
-
-    # Genera output
-    if diameter_stats:
-        create_plots(diameter_stats, output_prefix)
-        generate_summary_table(diameter_stats, f"{output_prefix}_summary.csv")
-
-    print("\n" + "="*70)
-    print("ANALYSIS COMPLETE!")
-    print("="*70)
+print("\n" + "="*70)
+print("ANALYSIS COMPLETE!")
+print("="*70)

@@ -252,7 +252,7 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path,
     centerlines = None
     
     if extract_skeleton:
-        centerlines = extract_centerlines(vessel_clean)
+        centerlines = extract_centerlines(vessel_clean, spacing=spacing)
         
         if enable_reconnection and use_centerline_reconnection and centerlines is not None:
             
@@ -263,9 +263,9 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path,
                 max_gap_mm=1.0,  # Leggermente più permissivo per centerlines
                 search_radius_mm=5.0
             )
-            
+
             # Rigenera centerlines dopo reconnection
-            centerlines = extract_centerlines(vessel_clean)
+            centerlines = extract_centerlines(vessel_clean, spacing=spacing)
     
     # Cerca seed regions
     artery_seed_path, vein_seed_path = find_seed_regions(seg_dir)

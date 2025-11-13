@@ -2,14 +2,7 @@ import os
 import numpy as np
 import SimpleITK as sitk
 from scipy import ndimage
-# skimage may not expose skeletonize_3d in some versions; try import with fallback
-try:
-    from skimage.morphology import skeletonize_3d
-    _HAS_SKELETONIZE_3D = True
-except Exception:
-    # Fallback: use 2D skeletonize per-slice (works on binary masks, less topologically-accurate)
-    from skimage.morphology import skeletonize
-    _HAS_SKELETONIZE_3D = False
+import kimimaro
 from totalsegmentator.python_api import totalsegmentator
 
 
@@ -63,7 +56,7 @@ def create_spherical_kernel(radius_mm, spacing):
     return dist <= radius_mm
 
 
-def extract_centerlines(vessel_mask, min_branch_length=10):
+def extract_centerlines(vessel_mask, spacing=None, min_branch_length=10):
     """
     Extract vessel centerlines using 3D skeletonization.
     
@@ -76,21 +69,30 @@ def extract_centerlines(vessel_mask, min_branch_length=10):
     """
     print("\n--- Extracting centerlines ---")
     print(f"Input vessel voxels: {vessel_mask.sum()}")
-    
-    # Skeletonize (topology-preserving thinning when available)
-    if _HAS_SKELETONIZE_3D:
-        skeleton = skeletonize_3d(vessel_mask)
+
+    # Use kimimaro for 3D skeletonization (assume kimimaro is available)
+    if spacing is None:
+        anisotropy = (1.0, 1.0, 1.0)
     else:
-        # slice-wise 2D skeletonization fallback (applies on each axial slice)
-        print("skimage.skeletonize_3d not found; using 2D per-slice skeletonize fallback. This may be less accurate for 3D topology.")
-        skeleton = np.zeros_like(vessel_mask, dtype=bool)
-        # vessel_mask assumed as (Z, Y, X)
-        for z in range(vessel_mask.shape[0]):
-            slice_bin = vessel_mask[z].astype(bool)
-            # skeletonize expects 2D image with foreground==True
-            sk = skeletonize(slice_bin)
-            skeleton[z] = sk
-    print(f"Raw skeleton voxels: {skeleton.sum()}")
+        anisotropy = spacing
+
+    lbl = vessel_mask.astype(np.uint32)
+    skels = kimimaro.skeletonize(
+        lbl,
+        anisotropy=anisotropy,
+        dust_threshold=50,
+        fix_branching=True,
+        progress=False,
+    )
+
+    sk_mask = np.zeros_like(lbl, dtype=bool)
+    for s in skels.values():
+        if hasattr(s, 'vertices') and len(s.vertices) > 0:
+            verts = np.asarray(s.vertices, dtype=int)
+            sk_mask[verts[:, 0], verts[:, 1], verts[:, 2]] = True
+
+    skeleton = sk_mask
+    print(f"kimimaro: raw skeleton voxels: {skeleton.sum()}")
     
     # Optional: Remove small disconnected components
     labeled, num_features = ndimage.label(skeleton)
