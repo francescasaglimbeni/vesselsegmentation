@@ -39,11 +39,6 @@ def snap_to_medial_axis(coords, distance_transform, max_search_radius=3):
     return np.array(snapped_coords, dtype=int)
 
 
-def detect_bifurcations(skeleton_obj, coords, distance_transform):
-    # Bifurcation detection removed: this module focuses on diameter statistics only.
-    return np.array([]).reshape(0, 3), np.array([]), 0
-
-
 def count_connected_components(binary_mask):
     """Conta il numero di oggetti connessi nella maschera."""
     labeled_array, num_features = ndimage.label(binary_mask)
@@ -92,8 +87,6 @@ def sample_centerline_diameters_enhanced(mask_bool: np.ndarray, spacing):
     
     # Estrai centerline con oggetti skeleton
     cl_coords, skeleton_objects, backend_used, n_components = extract_centerline_coords_enhanced(mask_bool, spacing)
-    
-    # Prepare stats focusing on diameter sampling (bifurcation analysis removed)
     stats = {
         'n_objects': n_objects,
         'n_components': n_components,
@@ -234,46 +227,38 @@ def create_plots(diameter_stats, output_prefix="diameter_analysis"):
     if not diameter_stats:
         print("⚠️  Insufficient data for plotting")
         return
-    # Build list of available labels to plot
-    available_labels = [l for l in [1, 2] if l in diameter_stats and diameter_stats[l] is not None]
-    if len(available_labels) == 0:
-        print("⚠️  No valid labels to plot")
-        return
-
-    # Dynamic subplot rows based on number of labels
-    n_rows = len(available_labels)
-    fig, axes = plt.subplots(n_rows, 2, figsize=(12, 5 * n_rows))
-
-    # Normalize axes shape to (n_rows, 2)
-    axes = np.atleast_2d(axes)
-
-    # Color map fallback: try to keep consistent colors if label names known
-    colors = {'Arteries': '#e74c3c', 'Veins': '#3498db', 'Vessels': '#2ecc71'}
-
-    for idx, label in enumerate(available_labels):
+    
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    colors = {'Arteries': '#e74c3c', 'Veins': '#3498db'}
+    
+    for idx, label in enumerate([1, 2]):
+        if label not in diameter_stats or diameter_stats[label] is None:
+            continue
+            
         diam = diameter_stats[label]
         label_name = diam['label_name']
         diameters = diam['all_diameters']
         color = colors.get(label_name, '#3498db')
-
+        
+        row = idx
+        
         # Histogram
-        ax_h = axes[idx, 0]
-        ax_h.hist(diameters, bins=50, alpha=0.7, color=color, edgecolor='black')
-        ax_h.set_xlabel('Diameter (mm)')
-        ax_h.set_ylabel('Frequency')
-        ax_h.set_title(f'{label_name} - Diameter Distribution')
-        ax_h.grid(True, alpha=0.3)
-        ax_h.set_xlim([0, 10])
-
-        # Box plot (show each label as its own box in the row)
-        ax_b = axes[idx, 1]
-        bp = ax_b.boxplot([diameters], labels=[label_name], showfliers=False, patch_artist=True)
+        axes[row, 0].hist(diameters, bins=50, alpha=0.7, color=color, edgecolor='black')
+        axes[row, 0].set_xlabel('Diameter (mm)')
+        axes[row, 0].set_ylabel('Frequency')
+        axes[row, 0].set_title(f'{label_name} - Diameter Distribution')
+        axes[row, 0].grid(True, alpha=0.3)
+        axes[row, 0].set_xlim([0, 10])
+        
+        # Box plot
+        bp = axes[row, 1].boxplot([diameters], labels=[label_name], 
+                             showfliers=False, patch_artist=True)
         bp['boxes'][0].set_facecolor(color)
         bp['boxes'][0].set_alpha(0.7)
-        ax_b.set_ylabel('Diameter (mm)')
-        ax_b.set_title(f'{label_name} - Box Plot')
-        ax_b.grid(True, alpha=0.3, axis='y')
-
+        axes[row, 1].set_ylabel('Diameter (mm)')
+        axes[row, 1].set_title(f'{label_name} - Box Plot')
+        axes[row, 1].grid(True, alpha=0.3, axis='y')
+    
     plt.tight_layout()
     plt.savefig(f'{output_prefix}.png', dpi=150, bbox_inches='tight')
     print(f"  ✓ Saved: {output_prefix}.png")
@@ -299,17 +284,12 @@ def print_final_summary(diameter_stats):
             print(f"\n- {label_name}:")
             print(f"  • Connected objects: {stats.get('n_objects', 'N/A')}")
             print(f"  • Skeleton components: {stats.get('n_components', 'N/A')}")
-            print(f"  • Bifurcations: {stats.get('n_bifurcations', 0)}")
-            if stats.get('n_bifurcations', 0) > 0:
-                bif_diams = stats.get('bifurcation_diameters', np.array([]))
-                if len(bif_diams) > 0:
-                    print(f"  • Bifurcation diameter: {bif_diams.mean():.2f} ± {bif_diams.std():.2f} mm")
             print(f"  • Mean diameter: {diam['mean']:.2f} mm (range: {diam['min']:.2f}-{diam['max']:.2f} mm)")
             print(f"  • Sampled points: {diam['n_sampled_points']:,}")
 
 mask_path = '/content/vesselsegmentation/vessels_cleaned/1.2.840.113704.1.111.2604.1126357612.7_cleaned.nii.gz'
 spacing = (0.7, 0.7, 0.7)
-output_prefix = "diameters_analysis_TS"
+output_prefix = "diameters_analysis_GT"
 DIAMETER_METHOD = 'centerline'
 
 print("="*70)
@@ -320,8 +300,6 @@ print(f"Method: {DIAMETER_METHOD}")
 print("\nFeatures:")
 print("  ✓ Number of objects")
 print("  ✓ Radii analysis")
-print("  ✓ Bifurcation detection")
-print("  ✓ Radii across bifurcations")
 print("  ✓ 3D skeleton visualization")
 
 diameter_stats = analyze_diameters(mask_path, spacing, diameter_method=DIAMETER_METHOD)

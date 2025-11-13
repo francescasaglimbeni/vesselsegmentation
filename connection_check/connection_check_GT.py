@@ -39,11 +39,6 @@ def snap_to_medial_axis(coords, distance_transform, max_search_radius=3):
     return np.array(snapped_coords, dtype=int)
 
 
-def detect_bifurcations(skeleton_obj, coords, distance_transform):
-    # Bifurcation detection removed: this module focuses on diameter statistics only.
-    return np.array([]).reshape(0, 3), np.array([]), 0
-
-
 def count_connected_components(binary_mask):
     """Conta il numero di oggetti connessi nella maschera."""
     labeled_array, num_features = ndimage.label(binary_mask)
@@ -92,8 +87,6 @@ def sample_centerline_diameters_enhanced(mask_bool: np.ndarray, spacing):
     
     # Estrai centerline con oggetti skeleton
     cl_coords, skeleton_objects, backend_used, n_components = extract_centerline_coords_enhanced(mask_bool, spacing)
-    
-    # Prepare stats focusing on diameter sampling (bifurcation analysis removed)
     stats = {
         'n_objects': n_objects,
         'n_components': n_components,
@@ -291,11 +284,6 @@ def print_final_summary(diameter_stats):
             print(f"\n- {label_name}:")
             print(f"  • Connected objects: {stats.get('n_objects', 'N/A')}")
             print(f"  • Skeleton components: {stats.get('n_components', 'N/A')}")
-            print(f"  • Bifurcations: {stats.get('n_bifurcations', 0)}")
-            if stats.get('n_bifurcations', 0) > 0:
-                bif_diams = stats.get('bifurcation_diameters', np.array([]))
-                if len(bif_diams) > 0:
-                    print(f"  • Bifurcation diameter: {bif_diams.mean():.2f} ± {bif_diams.std():.2f} mm")
             print(f"  • Mean diameter: {diam['mean']:.2f} mm (range: {diam['min']:.2f}-{diam['max']:.2f} mm)")
             print(f"  • Sampled points: {diam['n_sampled_points']:,}")
 
@@ -312,9 +300,6 @@ print(f"Method: {DIAMETER_METHOD}")
 print("\nFeatures:")
 print("  ✓ Number of objects")
 print("  ✓ Radii analysis")
-print("  ✓ Bifurcation detection")
-print("  ✓ Radii across bifurcations")
-print("  ✓ 3D skeleton visualization")
 
 diameter_stats = analyze_diameters(mask_path, spacing, diameter_method=DIAMETER_METHOD)
 
