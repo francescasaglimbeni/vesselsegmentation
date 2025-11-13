@@ -35,41 +35,29 @@ def get_skeleton_endpoints_kimimaro(skeleton):
 def skeletonize_with_kimimaro(mask, spacing):
     """
     Skeletonizzazione 3D robusta usando Kimimaro.
+    Versione compatibile che usa 'anisotropy' come nel codice funzionante.
     """
     
-    # Kimimaro si aspetta (x,y,z) ma noi abbiamo (z,y,x)
-    # Dobbiamo adattare le coordinate
-    kimimaro_scale = spacing[::-1]  # Converti a (x,y,z)
+    # Usa lo stesso formato del codice che funziona
+    kimimaro_spacing = spacing[::-1]  # Converti a (x,y,z)
     
-    # Skeletonizza con Kimimaro - parametri corretti
+    print("Starting Kimimaro skeletonization with 'anisotropy' parameter...")
     try:
         skeletons = kimimaro.skeletonize(
             mask.astype(np.uint8),
-            # Kimimaro moderno usa 'voxel_size' invece di 'scale'
-            voxel_size=kimimaro_scale,
-            dust_threshold=50,  # Rimuovi componenti piccole
-            parallel=1,  # Numero di CPU
+            anisotropy=kimimaro_spacing,  # ← USA 'anisotropy'
+            dust_threshold=50,
+            parallel=1,
             fix_branching=True,
             fix_borders=True,
             progress=True
         )
+        print("Kimimaro succeeded with 'anisotropy'")
         return skeletons
-    except TypeError as e:
-        # Fallback per vecchie versioni di Kimimaro
-        if "unexpected keyword argument 'voxel_size'" in str(e):
-            skeletons = kimimaro.skeletonize(
-                mask.astype(np.uint8),
-                scale=kimimaro_scale,
-                dust_threshold=50,
-                parallel=1,
-                fix_branching=True,
-                fix_borders=True,
-                progress=True
-            )
-            return skeletons
-        else:
-            raise e
-
+    except Exception as e:
+        print(f"Kimimaro failed with 'anisotropy': {e}")
+        return None
+    
 def connect_nearby_endpoints(mask, spacing, max_gap_mm=3.0, min_fragment_size=50):
     """
     Connette SOLO endpoint vicini usando lo skeleton di Kimimaro.
@@ -82,7 +70,7 @@ def connect_nearby_endpoints(mask, spacing, max_gap_mm=3.0, min_fragment_size=50
     try:
         skeletons = skeletonize_with_kimimaro(working_mask > 0, spacing)
     except Exception as e:
-            # Kimimaro failed: falling back to scikit-image
+        print("non kimiraro connection")
         return connect_nearby_endpoints_fallback(working_mask, spacing, max_gap_mm)
     
     if not skeletons:
@@ -411,7 +399,7 @@ mask_path = '/content/vesselsegmentation/CARVE14/1.2.840.113704.1.111.2604.11263
 spacing = (0.7, 0.7, 0.7)
 mask_skeleton, stats_skeleton = create_skeleton_mask_only(
     mask_path,
-    label_value=2,  # vene
+    label_value=1,  # vene
     spacing=spacing,
     max_gap_mm=3,
     output_prefix="test_skeleton"
