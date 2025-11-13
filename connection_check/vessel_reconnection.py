@@ -155,6 +155,9 @@ def connect_nearby_endpoints(mask, spacing, max_gap_mm=3.0, min_fragment_size=50
     labeled_before, n_before = ndimage.label(mask > 0)
     labeled_after, n_after = ndimage.label(working_mask > 0)
     
+    # Stampa il numero di frammenti prima e dopo
+    print(f"Frammenti: {n_before:,} → {n_after:,}")
+
     reduction_pct = (1 - n_after/n_before) * 100 if n_before > 0 else 0
     
     return working_mask, {
@@ -226,6 +229,9 @@ def connect_nearby_endpoints_fallback(mask, spacing, max_gap_mm=3.0):
     labeled_before, n_before = ndimage.label(mask > 0)
     labeled_after, n_after = ndimage.label(working_mask > 0)
     
+    # Stampa il numero di frammenti prima e dopo (fallback)
+    print(f"Frammenti: {n_before:,} → {n_after:,}")
+
     reduction_pct = (1 - n_after/n_before) * 100 if n_before > 0 else 0
     
     return working_mask, {
@@ -407,7 +413,7 @@ mask_skeleton, stats_skeleton = create_skeleton_mask_only(
     mask_path,
     label_value=2,  # vene
     spacing=spacing,
-    max_gap_mm=2.5,
+    max_gap_mm=3,
     output_prefix="test_skeleton"
 )
 
