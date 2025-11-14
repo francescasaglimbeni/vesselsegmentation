@@ -54,7 +54,7 @@ def extract_centerline_coords_enhanced(binary_mask: np.ndarray, spacing):
     skels = kimimaro.skeletonize(
         lbl,
         anisotropy=spacing,
-        dust_threshold=10,
+        dust_threshold=50,
         fix_branching=True,
         progress=False
     )
