@@ -5,22 +5,44 @@ from scipy import ndimage
 from code_vesselsegmentation.preprocessing import create_spherical_kernel, extract_centerlines
 
 def find_seed_regions(seg_dir):
+    """
+    Cerca le regioni seed per arterie e vene.
+    Usa le strutture disponibili dal task 'total' (open source).
+    """
     seed_candidates = {
-        'artery': ['pulmonary_artery.nii.gz', 'aorta.nii.gz'],
-        'vein': ['heart_atrium_left.nii.gz', 'pulmonary_vein.nii.gz', 'heart.nii.gz'],
+        'artery': [
+            'pulmonary_artery.nii.gz',      # Da heartchambers_highres (se disponibile)
+            'aorta.nii.gz',                 # Da total - PRINCIPALE
+            'brachiocephalic_trunk.nii.gz', # Da total - alternativa
+            'heart.nii.gz'                  # Da total - fallback generico
+        ],
+        'vein': [
+            'atrium_left.nii.gz',           # Da heartchambers_highres (se disponibile)
+            'pulmonary_vein.nii.gz',        # Da total - PRINCIPALE
+            'superior_vena_cava.nii.gz',    # Da total - alternativa
+            'inferior_vena_cava.nii.gz',    # Da total - alternativa
+            'heart.nii.gz'                  # Da total - fallback generico
+        ],
     }
 
     found_seeds = {'artery': None, 'vein': None}
+    
     for vessel_type, candidates in seed_candidates.items():
         for candidate in candidates:
             path = os.path.join(seg_dir, candidate)
             if os.path.exists(path):
                 found_seeds[vessel_type] = path
-                break
+                print(f"  ✓ Found {vessel_type} seed: {candidate}")
+                break  # Usa il primo trovato (priorità alta)
+        
+        if found_seeds[vessel_type] is None:
+            print(f"  ⚠ No {vessel_type} seed found")
+    
     return found_seeds['artery'], found_seeds['vein']
 
 
 def _gather_airway_mask(seg_dir, reference_img):
+    """Raccoglie tutte le maschere delle vie aeree"""
     airway_mask = None
     found = []
     
@@ -54,7 +76,9 @@ def adaptive_vessel_cleaning(vessel_mask, lung_mask, airway_mask, spacing,
                              airway_dilation_mm=3.0,
                              preserve_large_vessels=True, 
                              large_vessel_threshold_mm=2.5):
-    
+    """
+    Pulizia adattiva dei vasi con trattamento differenziato per vasi grandi/piccoli
+    """
     stats = {}
     
     erode_kernel = create_spherical_kernel(lung_erosion_mm, spacing)
@@ -121,6 +145,10 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path,
                                 airway_dilation_mm=3.0,
                                 preserve_large_vessels=True, 
                                 large_vessel_threshold_mm=2.5):
+    """
+    Processa la segmentazione dei vasi polmonari.
+    Ora supporta anche l'arteria polmonare da heartchambers_highres.
+    """
     
     # Leggi immagine originale per spacing
     original_img = sitk.ReadImage(original_image_path)
@@ -128,6 +156,7 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path,
     print(f"\nSpacing: {spacing} mm")
 
     os.makedirs(output_dir, exist_ok=True)
+    
     # Cerca maschera vasi
     vessel_path = None
     vessel_candidates = [
@@ -175,6 +204,7 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path,
     airways_full_img.CopyInformation(vessel_img)
     sitk.WriteImage(airways_full_img, os.path.join(output_dir, "airways_full.nii.gz"))
     
+    # Pulizia adattiva
     vessel_clean, cleaning_stats = adaptive_vessel_cleaning(
         vessel_mask, lung_mask, airway_mask, spacing,
         lung_erosion_mm=lung_erosion_mm,
@@ -191,8 +221,8 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path,
         airways_dil_img.CopyInformation(vessel_img)
         sitk.WriteImage(airways_dil_img, 
                        os.path.join(output_dir, "airways_dilated_for_cleaning.nii.gz"))
-    # No reconnection step: proceed with cleaned vessels
     
+    # Labeling e filtraggio componenti
     labeled, num_features = ndimage.label(vessel_clean)
     
     if num_features > 0:
@@ -221,12 +251,14 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path,
         voxels_before = int(vessel_clean.sum())
         vessel_clean = np.isin(labeled, keep_labels)
         voxels_after = int(vessel_clean.sum())
-    centerlines = None
     
+    # Estrazione centerlines
+    centerlines = None
     if extract_skeleton:
         centerlines = extract_centerlines(vessel_clean, spacing=spacing)
     
-    # Cerca seed regions
+    # Cerca seed regions (include pulmonary_artery)
+    print("\n--- Searching for seed regions ---")
     artery_seed_path, vein_seed_path = find_seed_regions(seg_dir)
 
     # Salva vasi puliti (OUTPUT PRINCIPALE)
@@ -261,10 +293,15 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path,
     if artery_seed_path:
         artery_seed_dest = os.path.join(output_dir, "seed_artery.nii.gz")
         sitk.WriteImage(sitk.ReadImage(artery_seed_path), artery_seed_dest)
+        print(f"  ✓ Saved artery seed to: seed_artery.nii.gz")
 
     if vein_seed_path:
         vein_seed_dest = os.path.join(output_dir, "seed_vein.nii.gz")
         sitk.WriteImage(sitk.ReadImage(vein_seed_path), vein_seed_dest)
+        print(f"  ✓ Saved vein seed to: seed_vein.nii.gz")
+    
+    # Stampa statistiche
+    print("\n--- Cleaning Statistics ---")
     for key, value in cleaning_stats.items():
         print(f"  {key}: {value}")
     

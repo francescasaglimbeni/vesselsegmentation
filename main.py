@@ -3,6 +3,7 @@ from totalsegmentator.python_api import totalsegmentator
 from code_vesselsegmentation.postprocessing import process_vessel_segmentation
 import os
 import tempfile
+import shutil
 import argparse
 
 
@@ -37,6 +38,13 @@ def process_single_scan(mhd_path, output_dir):
             task='total', 
             fast=False,
         )
+        
+        totalsegmentator(
+            nifti_path,
+            nifti_dir,
+            task='heartchambers_highres',
+            fast=False,
+        )
 
         # Process vessel segmentation con parametri OTTIMIZZATI
         cleaned_path, centerlines_path, lung_mask_path, artery_seed_path, vein_seed_path = process_vessel_segmentation(
@@ -65,32 +73,63 @@ def process_single_scan(mhd_path, output_dir):
         print(f"  ✓ {final_segmentation_name}")
 
         # Centerlines
-        if centerlines_path:
-            centerlines_name = base_name + '_centerlines.nii.gz'
-            centerlines_final_path = os.path.join(output_dir, centerlines_name)
-            os.rename(centerlines_path, centerlines_final_path)
-            print(f"  ✓ {centerlines_name}")
+        # Centerlines (commented out per request — keep code but don't save for now)
+        # if centerlines_path:
+        #     centerlines_name = base_name + '_centerlines.nii.gz'
+        #     centerlines_final_path = os.path.join(output_dir, centerlines_name)
+        #     os.rename(centerlines_path, centerlines_final_path)
+        #     print(f"  ✓ {centerlines_name}")
 
-        '''# Lung mask (eroded)
-        if lung_mask_path:
-            lung_mask_name = base_name + '_lung_mask_eroded.nii.gz'
-            lung_mask_final_path = os.path.join(output_dir, lung_mask_name)
-            os.rename(lung_mask_path, lung_mask_final_path)
-            print(f"  ✓ {lung_mask_name}")
+        # Lung mask (eroded) (commented out per request — keep code but don't save for now)
+        # if lung_mask_path:
+        #     lung_mask_name = base_name + '_lung_mask_eroded.nii.gz'
+        #     lung_mask_final_path = os.path.join(output_dir, lung_mask_name)
+        #     os.rename(lung_mask_path, lung_mask_final_path)
+        #     print(f"  ✓ {lung_mask_name}")
             
         # Seed regions
-        if artery_seed_path:
+        # Save a single artery seed (prefer returned path, fallback to any file written into output_dir).
+        if artery_seed_path or os.path.exists(os.path.join(output_dir, 'seed_artery.nii.gz')):
             artery_seed_name = base_name + '_seed_artery.nii.gz'
             artery_seed_final_path = os.path.join(output_dir, artery_seed_name)
-            os.rename(artery_seed_path, artery_seed_final_path)
-            print(f"  ✓ {artery_seed_name}")
+            src = None
+            if artery_seed_path and os.path.exists(artery_seed_path):
+                src = artery_seed_path
+            else:
+                alt_src = os.path.join(output_dir, 'seed_artery.nii.gz')
+                if os.path.exists(alt_src):
+                    src = alt_src
+            if src:
+                try:
+                    # Avoid copying if source already equals target (prevents duplicates)
+                    if os.path.abspath(src) != os.path.abspath(artery_seed_final_path):
+                        shutil.copy2(src, artery_seed_final_path)
+                    print(f"  ✓ {artery_seed_name}")
+                except Exception as e:
+                    print(f"  ⚠ Could not save artery seed for: {base_name} ({e})")
+            else:
+                print(f"  ⚠ Could not find artery seed for: {base_name}")
 
-        if vein_seed_path:
+        # Save a single vein seed (prefer returned path, fallback to any file written into output_dir).
+        if vein_seed_path or os.path.exists(os.path.join(output_dir, 'seed_vein.nii.gz')):
             vein_seed_name = base_name + '_seed_vein.nii.gz'
             vein_seed_final_path = os.path.join(output_dir, vein_seed_name)
-            os.rename(vein_seed_path, vein_seed_final_path)
-            print(f"  ✓ {vein_seed_name}")'''
-
+            src = None
+            if vein_seed_path and os.path.exists(vein_seed_path):
+                src = vein_seed_path
+            else:
+                alt_src = os.path.join(output_dir, 'seed_vein.nii.gz')
+                if os.path.exists(alt_src):
+                    src = alt_src
+            if src:
+                try:
+                    if os.path.abspath(src) != os.path.abspath(vein_seed_final_path):
+                        shutil.copy2(src, vein_seed_final_path)
+                    print(f"  ✓ {vein_seed_name}")
+                except Exception as e:
+                    print(f"  ⚠ Could not save vein seed for: {base_name} ({e})")
+            else:
+                print(f"  ⚠ Could not find vein seed for: {base_name}")
 
 def process_folder(input_folder, output_dir):
     """Elabora tutti i file MHD in una cartella"""
