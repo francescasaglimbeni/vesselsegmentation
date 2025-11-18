@@ -1,4 +1,5 @@
 import os
+import shutil
 import numpy as np
 import SimpleITK as sitk
 from scipy import ndimage
@@ -135,7 +136,6 @@ def adaptive_vessel_cleaning(vessel_mask, lung_mask, airway_mask, spacing,
     stats['removed_voxels'] = int(vessel_mask.sum() - vessel_clean.sum())
     
     return vessel_clean, stats
-
 
 def process_vessel_segmentation(seg_dir, output_dir, original_image_path, 
                                 min_vessel_voxels=20, 
@@ -275,6 +275,22 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path,
         centerlines_path = os.path.join(output_dir, "vessel_centerlines.nii.gz")
         sitk.WriteImage(centerlines_img, centerlines_path)
 
+    # CORREZIONE: Salva i seed nella directory di output temporaneo
+    artery_seed_dest = None
+    vein_seed_dest = None
+    
+    if artery_seed_path and os.path.exists(artery_seed_path):
+        # Copia il file seed arteria nella directory di output
+        artery_seed_dest = os.path.join(output_dir, "seed_artery.nii.gz")
+        shutil.copy2(artery_seed_path, artery_seed_dest)
+        print(f"  ✓ Saved artery seed: {artery_seed_dest}")
+    
+    if vein_seed_path and os.path.exists(vein_seed_path):
+        # Copia il file seed vena nella directory di output
+        vein_seed_dest = os.path.join(output_dir, "seed_vein.nii.gz")
+        shutil.copy2(vein_seed_path, vein_seed_dest)
+        print(f"  ✓ Saved vein seed: {vein_seed_dest}")
+
     # Salva maschere polmonari (originale + erosa)
     erode_kernel = create_spherical_kernel(lung_erosion_mm, spacing)
     lung_mask_eroded = ndimage.binary_erosion(lung_mask, structure=erode_kernel)
@@ -289,20 +305,10 @@ def process_vessel_segmentation(seg_dir, output_dir, original_image_path,
     lung_mask_orig_img.CopyInformation(vessel_img)
     sitk.WriteImage(lung_mask_orig_img, lung_mask_orig_path)
 
-    # Copia seed regions se presenti
-    if artery_seed_path:
-        artery_seed_dest = os.path.join(output_dir, "seed_artery.nii.gz")
-        sitk.WriteImage(sitk.ReadImage(artery_seed_path), artery_seed_dest)
-        print(f"  ✓ Saved artery seed to: seed_artery.nii.gz")
-
-    if vein_seed_path:
-        vein_seed_dest = os.path.join(output_dir, "seed_vein.nii.gz")
-        sitk.WriteImage(sitk.ReadImage(vein_seed_path), vein_seed_dest)
-        print(f"  ✓ Saved vein seed to: seed_vein.nii.gz")
-    
     # Stampa statistiche
     print("\n--- Cleaning Statistics ---")
     for key, value in cleaning_stats.items():
         print(f"  {key}: {value}")
     
-    return vessels_out_path, centerlines_path, lung_mask_path, artery_seed_path, vein_seed_path
+    # CORREZIONE: Restituisci i path REALI dei seed salvati
+    return vessels_out_path, centerlines_path, lung_mask_path, artery_seed_dest, vein_seed_dest
