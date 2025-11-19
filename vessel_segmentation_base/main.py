@@ -1,4 +1,4 @@
-from code_vesselsegmentation.preprocessing import convert_mhd_to_nifti
+from preprocessing.preprocessing import convert_mhd_to_nifti
 from totalsegmentator.python_api import totalsegmentator
 from code_vesselsegmentation.postprocessing import process_vessel_segmentation
 import os
@@ -48,7 +48,7 @@ def process_single_scan(mhd_path, output_dir):
         # Process vessel segmentation con parametri OTTIMIZZATI
         cleaned_path, centerlines_path, lung_mask_path, artery_seed_path, vein_seed_path = process_vessel_segmentation(
         nifti_dir,
-        output_dir,  # NOTA: ora i seed vengono salvati direttamente qui
+        output_dir, 
         nifti_path,
         min_vessel_voxels=30,
         min_vessel_diameter_mm=0.6,
