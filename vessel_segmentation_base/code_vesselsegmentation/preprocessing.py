@@ -3,8 +3,6 @@ import numpy as np
 import SimpleITK as sitk
 from scipy import ndimage
 import kimimaro
-from totalsegmentator.python_api import totalsegmentator
-
 
 def convert_mhd_to_nifti(mhd_path, output_dir):
     """

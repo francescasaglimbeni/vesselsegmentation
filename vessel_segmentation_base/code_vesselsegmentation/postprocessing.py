@@ -3,7 +3,7 @@ import shutil
 import numpy as np
 import SimpleITK as sitk
 from scipy import ndimage
-from preprocessing.preprocessing import create_spherical_kernel, extract_centerlines
+from vessel_segmentation_base.code_vesselsegmentation.preprocessing import create_spherical_kernel, extract_centerlines
 
 def find_seed_regions(seg_dir):
     """

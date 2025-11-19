@@ -1,4 +1,4 @@
-from preprocessing.preprocessing import convert_mhd_to_nifti
+from vessel_segmentation_base.code_vesselsegmentation.preprocessing import convert_mhd_to_nifti
 from totalsegmentator.python_api import totalsegmentator
 from code_vesselsegmentation.postprocessing import process_vessel_segmentation
 import os
