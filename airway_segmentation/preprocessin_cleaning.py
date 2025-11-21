@@ -5,7 +5,9 @@ from mpl_toolkits.mplot3d import Axes3D
 from scipy.ndimage import label, binary_dilation, binary_erosion, distance_transform_edt
 from scipy.ndimage import generate_binary_structure
 import pandas as pd
-from skimage.morphology import ball
+from skimage.morphology import ball, skeletonize
+from skan import Skeleton, summarize
+import networkx as nx
 import os
 
 
@@ -14,7 +16,8 @@ class SegmentationPreprocessor:
     Pre-processes airway segmentation before skeletonization:
     - Analyzes connected components
     - Keeps only the largest component (main airway tree)
-    - Attempts to reconnect nearby disconnected components
+    - Attempts to reconnect nearby disconnected components (PATH-BASED distances)
+    - Identifies and removes trachea (keeps from carina onwards)
     - Cleans small isolated artifacts
     """
     
@@ -42,6 +45,12 @@ class SegmentationPreprocessor:
         self.connected_components = None
         self.component_stats = None
         self.reconnection_info = []
+        
+        # Skeleton and graph for trachea removal
+        self.preliminary_skeleton = None
+        self.preliminary_graph = None
+        self.carina_location = None
+        self.trachea_removed = False
         
     def analyze_components(self):
         """Analyzes connected components in the original segmentation"""
@@ -165,21 +174,289 @@ class SegmentationPreprocessor:
         
         return self.cleaned_mask
     
+    def compute_preliminary_skeleton_and_graph(self):
+        """
+        Computes a preliminary skeleton and graph for:
+        1. Identifying the carina
+        2. Calculating path-based distances for reconnection
+        """
+        print(f"\n{'='*60}")
+        print("COMPUTING PRELIMINARY SKELETON FOR ANALYSIS")
+        print(f"{'='*60}")
+        
+        if self.cleaned_mask is None:
+            # If no cleaned mask yet, use largest component
+            self.keep_largest_component()
+        
+        binary_mask = (self.cleaned_mask > 0).astype(np.uint8)
+        
+        print("Computing 3D skeleton (this may take a few minutes)...")
+        self.preliminary_skeleton = skeletonize(binary_mask)
+        print(f"Skeleton computed: {np.sum(self.preliminary_skeleton > 0)} voxels")
+        
+        # Compute distance transform for diameter estimation
+        print("Computing distance transform...")
+        spacing_zyx = (self.spacing[2], self.spacing[1], self.spacing[0])
+        self.distance_transform = distance_transform_edt(binary_mask, sampling=spacing_zyx)
+        
+        # Build graph with skan
+        print("Building preliminary graph with skan...")
+        skeleton_obj = Skeleton(self.preliminary_skeleton, spacing=spacing_zyx)
+        branch_data = summarize(skeleton_obj)
+        
+        print(f"Identified {len(branch_data)} branches in preliminary skeleton")
+        
+        # Create NetworkX graph
+        self.preliminary_graph = nx.Graph()
+        
+        # Add nodes with positions and diameter information
+        coordinates = skeleton_obj.coordinates
+        for idx in range(len(coordinates)):
+            pos = coordinates[idx]
+            z, y, x = int(pos[0]), int(pos[1]), int(pos[2])
+            
+            # Get diameter at this position (from distance transform)
+            if (0 <= z < self.distance_transform.shape[0] and
+                0 <= y < self.distance_transform.shape[1] and
+                0 <= x < self.distance_transform.shape[2]):
+                diameter = self.distance_transform[z, y, x] * 2
+            else:
+                diameter = 0
+            
+            self.preliminary_graph.add_node(idx, pos=pos, diameter=diameter)
+        
+        # Add edges from branches
+        for _, row in branch_data.iterrows():
+            node1 = int(row['node-id-src'])
+            node2 = int(row['node-id-dst'])
+            length = row['branch-distance']
+            
+            # Calculate average diameter along this branch
+            try:
+                coords = skeleton_obj.path_coordinates(row.name)
+                diameters = []
+                for coord in coords:
+                    z, y, x = coord
+                    if (0 <= z < self.distance_transform.shape[0] and
+                        0 <= y < self.distance_transform.shape[1] and
+                        0 <= x < self.distance_transform.shape[2]):
+                        diameters.append(self.distance_transform[z, y, x] * 2)
+                avg_diameter = np.mean(diameters) if diameters else 0
+            except:
+                avg_diameter = 0
+            
+            self.preliminary_graph.add_edge(node1, node2, 
+                                           length=length, 
+                                           diameter=avg_diameter,
+                                           branch_type=row['branch-type'])
+        
+        print(f"Graph created: {len(self.preliminary_graph.nodes())} nodes, "
+              f"{len(self.preliminary_graph.edges())} edges")
+        
+        return self.preliminary_skeleton, self.preliminary_graph
+    
+    def identify_and_remove_trachea(self):
+        """
+        Identifies the carina (bifurcation with largest diameter) and removes
+        all airway tissue proximal to it (trachea)
+        """
+        print(f"\n{'='*60}")
+        print("IDENTIFYING AND REMOVING TRACHEA")
+        print(f"{'='*60}")
+        
+        if self.preliminary_graph is None:
+            raise ValueError("Run compute_preliminary_skeleton_and_graph() first")
+        
+        # Find bifurcations (nodes with degree >= 3)
+        bifurcations = [node for node in self.preliminary_graph.nodes() 
+                       if self.preliminary_graph.degree(node) >= 3]
+        
+        print(f"Found {len(bifurcations)} bifurcation points")
+        
+        if len(bifurcations) == 0:
+            print("WARNING: No bifurcations found! Cannot identify carina.")
+            print("Proceeding without trachea removal.")
+            self.trachea_removed = False
+            return self.cleaned_mask
+        
+        # Calculate average diameter near each bifurcation
+        bifurcation_info = []
+        for bif_node in bifurcations:
+            pos = self.preliminary_graph.nodes[bif_node]['pos']
+            
+            # Get diameters of connected edges
+            connected_edges = self.preliminary_graph.edges(bif_node)
+            edge_diameters = []
+            for edge in connected_edges:
+                edge_data = self.preliminary_graph.get_edge_data(*edge)
+                if 'diameter' in edge_data:
+                    edge_diameters.append(edge_data['diameter'])
+            
+            avg_diameter = np.mean(edge_diameters) if edge_diameters else 0
+            max_diameter = np.max(edge_diameters) if edge_diameters else 0
+            
+            bifurcation_info.append({
+                'node': bif_node,
+                'position': pos,
+                'avg_diameter': avg_diameter,
+                'max_diameter': max_diameter,
+                'degree': self.preliminary_graph.degree(bif_node)
+            })
+        
+        # Sort by average diameter (descending)
+        bifurcation_info.sort(key=lambda x: x['avg_diameter'], reverse=True)
+        
+        # The carina is the bifurcation with the largest diameter
+        carina_info = bifurcation_info[0]
+        self.carina_location = carina_info['position']
+        carina_node = carina_info['node']
+        
+        print(f"\nIdentified CARINA:")
+        print(f"  Node ID: {carina_node}")
+        print(f"  Position (z,y,x): ({self.carina_location[0]:.1f}, "
+              f"{self.carina_location[1]:.1f}, {self.carina_location[2]:.1f})")
+        print(f"  Average diameter: {carina_info['avg_diameter']:.2f} mm")
+        print(f"  Max diameter: {carina_info['max_diameter']:.2f} mm")
+        print(f"  Degree: {carina_info['degree']}")
+        
+        # Show top 5 bifurcations for comparison
+        print(f"\nTop 5 bifurcations by diameter:")
+        for i, bif in enumerate(bifurcation_info[:5]):
+            marker = " ← CARINA" if i == 0 else ""
+            print(f"  {i+1}. Node {bif['node']}: "
+                  f"avg_diameter={bif['avg_diameter']:.2f} mm, "
+                  f"degree={bif['degree']}{marker}")
+        
+        # Remove trachea: keep only voxels at or below carina's z-coordinate
+        # (assuming z increases from superior to inferior)
+        carina_z = int(self.carina_location[0])
+        
+        print(f"\nRemoving trachea (all tissue above z={carina_z})...")
+        
+        # Create mask for bronchi only (from carina onwards)
+        bronchi_mask = self.cleaned_mask.copy()
+        bronchi_mask[:carina_z, :, :] = 0  # Remove everything above carina
+        
+        original_voxels = np.sum(self.cleaned_mask > 0)
+        bronchi_voxels = np.sum(bronchi_mask > 0)
+        removed_voxels = original_voxels - bronchi_voxels
+        
+        print(f"Original voxels (trachea + bronchi): {original_voxels:,}")
+        print(f"Remaining voxels (bronchi only): {bronchi_voxels:,}")
+        print(f"Removed voxels (trachea): {removed_voxels:,} "
+              f"({removed_voxels/original_voxels*100:.1f}%)")
+        
+        self.cleaned_mask = bronchi_mask
+        self.trachea_removed = True
+        
+        return self.cleaned_mask
+    
+    def calculate_path_distance(self, component_coords, main_component_coords):
+        """
+        Calculates the minimum path-based distance from a component to the main component
+        using the preliminary skeleton graph.
+        
+        Returns:
+            min_distance_mm: Minimum path distance in mm
+            best_comp_point: Closest point in component
+            best_main_point: Closest point in main component
+        """
+        if self.preliminary_graph is None:
+            # Fallback to Euclidean if graph not available
+            return self._calculate_euclidean_distance(component_coords, main_component_coords)
+        
+        # Sample points for efficiency
+        comp_sample = component_coords[::max(1, len(component_coords)//20)]
+        main_sample = main_component_coords[::max(1, len(main_component_coords)//50)]
+        
+        # Find closest skeleton nodes to sampled points
+        skeleton_coords = np.array([self.preliminary_graph.nodes[n]['pos'] 
+                                    for n in self.preliminary_graph.nodes()])
+        
+        min_distance = float('inf')
+        best_comp_point = None
+        best_main_point = None
+        
+        for comp_point in comp_sample:
+            # Find closest skeleton node to this component point
+            dists_to_skel = np.linalg.norm(skeleton_coords - comp_point, axis=1)
+            comp_node = np.argmin(dists_to_skel)
+            
+            for main_point in main_sample:
+                # Find closest skeleton node to this main component point
+                dists_to_main = np.linalg.norm(skeleton_coords - main_point, axis=1)
+                main_node = np.argmin(dists_to_main)
+                
+                # Calculate shortest path distance in graph
+                try:
+                    path_length = nx.shortest_path_length(
+                        self.preliminary_graph, 
+                        comp_node, 
+                        main_node, 
+                        weight='length'
+                    )
+                    
+                    # Add distances from points to nearest skeleton nodes
+                    total_distance = (path_length + 
+                                    dists_to_skel[comp_node] * np.mean(self.spacing) +
+                                    dists_to_main[main_node] * np.mean(self.spacing))
+                    
+                    if total_distance < min_distance:
+                        min_distance = total_distance
+                        best_comp_point = comp_point
+                        best_main_point = main_point
+                        
+                except nx.NetworkXNoPath:
+                    # No path exists in graph, skip this pair
+                    continue
+        
+        if best_comp_point is None:
+            # No path found, fallback to Euclidean
+            return self._calculate_euclidean_distance(component_coords, main_component_coords)
+        
+        return min_distance, best_comp_point, best_main_point
+    
+    def _calculate_euclidean_distance(self, component_coords, main_component_coords):
+        """Fallback method: calculates Euclidean distance"""
+        comp_sample = component_coords[::max(1, len(component_coords)//20)]
+        main_sample = main_component_coords[::max(1, len(main_component_coords)//50)]
+        
+        min_distance = float('inf')
+        best_comp_point = None
+        best_main_point = None
+        
+        for comp_point in comp_sample:
+            for main_point in main_sample:
+                dist_vector = (comp_point - main_point) * np.array([self.spacing[2], 
+                                                                     self.spacing[1], 
+                                                                     self.spacing[0]])
+                distance = np.linalg.norm(dist_vector)
+                
+                if distance < min_distance:
+                    min_distance = distance
+                    best_comp_point = comp_point
+                    best_main_point = main_point
+        
+        return min_distance, best_comp_point, best_main_point
+    
     def reconnect_nearby_components(self, max_distance_mm=10.0, min_component_size=50,
-                                   max_components_to_reconnect=10):
+                                   max_components_to_reconnect=10, use_path_distance=True):
         """
         Attempts to reconnect nearby disconnected components to the main tree
+        using PATH-BASED distances along the skeleton (if available)
         
         Args:
             max_distance_mm: Maximum distance to consider reconnection (mm)
             min_component_size: Minimum size of component to attempt reconnection (voxels)
             max_components_to_reconnect: Maximum number of components to try reconnecting
+            use_path_distance: If True, use path-based distance along skeleton
         """
         print(f"\n{'='*60}")
-        print("ATTEMPTING COMPONENT RECONNECTION")
+        print("ATTEMPTING COMPONENT RECONNECTION (PATH-BASED)")
         print(f"{'='*60}")
         print(f"Max reconnection distance: {max_distance_mm} mm")
         print(f"Min component size: {min_component_size} voxels")
+        print(f"Distance method: {'Path-based (along skeleton)' if use_path_distance else 'Euclidean'}")
         
         if self.connected_components is None:
             raise ValueError("Run analyze_components() first")
@@ -189,15 +466,17 @@ class SegmentationPreprocessor:
             self.cleaned_mask = (self.original_mask > 0).astype(np.uint8)
             return self.cleaned_mask
         
+        # Compute preliminary skeleton if using path distance
+        if use_path_distance and self.preliminary_graph is None:
+            print("\nComputing preliminary skeleton for path-based distances...")
+            self.compute_preliminary_skeleton_and_graph()
+        
         # Start with largest component
         main_id = self.component_stats.iloc[0]['component_id']
         main_mask = (self.connected_components == main_id).astype(np.uint8)
+        main_component_coords = np.argwhere(main_mask > 0)
         
-        # Get boundary of main component using dilation
-        main_boundary = binary_dilation(main_mask) & ~main_mask
-        main_boundary_coords = np.argwhere(main_boundary)
-        
-        print(f"\nMain component boundary: {len(main_boundary_coords):,} voxels")
+        print(f"\nMain component: {len(main_component_coords):,} voxels")
         
         reconnected_count = 0
         kept_isolated_count = 0
@@ -214,38 +493,27 @@ class SegmentationPreprocessor:
             
             print(f"\nComponent {comp_id}: {comp_size} voxels ({comp_row['volume_mm3']:.2f} mm³)")
             
-            # Get component boundary
+            # Get component coordinates
             comp_mask = (self.connected_components == comp_id).astype(np.uint8)
-            comp_boundary = binary_dilation(comp_mask) & ~comp_mask
-            comp_boundary_coords = np.argwhere(comp_boundary)
+            comp_coords = np.argwhere(comp_mask > 0)
             
-            # Find closest points between boundaries
-            min_distance_voxels = float('inf')
-            best_main_point = None
-            best_comp_point = None
+            # Calculate distance (path-based or Euclidean)
+            if use_path_distance:
+                min_distance, best_comp_point, best_main_point = self.calculate_path_distance(
+                    comp_coords, main_component_coords
+                )
+                distance_type = "path"
+            else:
+                min_distance, best_comp_point, best_main_point = self._calculate_euclidean_distance(
+                    comp_coords, main_component_coords
+                )
+                distance_type = "Euclidean"
             
-            # Sample for efficiency
-            main_sample = main_boundary_coords[::max(1, len(main_boundary_coords)//1000)]
-            comp_sample = comp_boundary_coords[::max(1, len(comp_boundary_coords)//200)]
-            
-            for comp_point in comp_sample:
-                for main_point in main_sample:
-                    # Physical distance
-                    diff = (comp_point - main_point) * np.array([self.spacing[2], 
-                                                                  self.spacing[1], 
-                                                                  self.spacing[0]])
-                    distance = np.linalg.norm(diff)
-                    
-                    if distance < min_distance_voxels:
-                        min_distance_voxels = distance
-                        best_main_point = main_point
-                        best_comp_point = comp_point
-            
-            print(f"  Minimum distance to main component: {min_distance_voxels:.2f} mm")
+            print(f"  Minimum {distance_type} distance: {min_distance:.2f} mm")
             
             # Decision: reconnect or keep isolated?
-            if min_distance_voxels <= max_distance_mm:
-                print(f"  ✓ Reconnecting (distance {min_distance_voxels:.2f} mm ≤ {max_distance_mm} mm)")
+            if min_distance <= max_distance_mm:
+                print(f"  ✓ Reconnecting (distance {min_distance:.2f} mm ≤ {max_distance_mm} mm)")
                 
                 # Create bridge
                 bridge_mask = self._create_bridge(best_comp_point, best_main_point, comp_mask.shape)
@@ -253,24 +521,25 @@ class SegmentationPreprocessor:
                 # Add component and bridge to main mask
                 main_mask = main_mask | comp_mask | bridge_mask
                 
-                # Update boundary for next iterations
-                main_boundary = binary_dilation(main_mask) & ~main_mask
-                main_boundary_coords = np.argwhere(main_boundary)
+                # Update main component coordinates for next iterations
+                main_component_coords = np.argwhere(main_mask > 0)
                 
                 self.reconnection_info.append({
                     'component_id': comp_id,
                     'size_voxels': comp_size,
-                    'distance_mm': min_distance_voxels,
+                    'distance_mm': min_distance,
+                    'distance_type': distance_type,
                     'reconnected': True
                 })
                 
                 reconnected_count += 1
             else:
-                print(f"  ✗ Keeping isolated (distance {min_distance_voxels:.2f} mm > {max_distance_mm} mm)")
+                print(f"  ✗ Keeping isolated (distance {min_distance:.2f} mm > {max_distance_mm} mm)")
                 self.reconnection_info.append({
                     'component_id': comp_id,
                     'size_voxels': comp_size,
-                    'distance_mm': min_distance_voxels,
+                    'distance_mm': min_distance,
+                    'distance_type': distance_type,
                     'reconnected': False
                 })
                 kept_isolated_count += 1
@@ -394,10 +663,19 @@ class SegmentationPreprocessor:
                       c=[colors[i]], s=10, alpha=0.6,
                       label=f'Comp {comp_id} ({comp_size:,} vox)')
         
+        # Mark carina if identified
+        if self.carina_location is not None:
+            ax.scatter([self.carina_location[2]], [self.carina_location[1]], [self.carina_location[0]],
+                      c='red', s=200, marker='*', edgecolors='black', linewidths=2,
+                      label='CARINA', zorder=10)
+        
         ax.set_xlabel('X (voxel)')
         ax.set_ylabel('Y (voxel)')
         ax.set_zlabel('Z (voxel)')
-        ax.set_title(f'Connected Components Analysis\n{len(self.component_stats)} total components')
+        title = f'Connected Components Analysis\n{len(self.component_stats)} total components'
+        if self.trachea_removed:
+            title += ' (Trachea removed)'
+        ax.set_title(title)
         ax.legend(bbox_to_anchor=(1.15, 1), loc='upper left', fontsize=9)
         
         plt.tight_layout()
@@ -434,10 +712,22 @@ class SegmentationPreprocessor:
         cleaned_coords = cleaned_coords[::subsample]
         ax2.scatter(cleaned_coords[:, 2], cleaned_coords[:, 1], cleaned_coords[:, 0],
                    c='green', s=1, alpha=0.5)
-        ax2.set_title(f'Cleaned\n({np.sum(self.cleaned_mask > 0):,} voxels)')
+        
+        # Mark carina
+        if self.carina_location is not None:
+            ax2.scatter([self.carina_location[2]], [self.carina_location[1]], [self.carina_location[0]],
+                       c='red', s=100, marker='*', edgecolors='black', linewidths=1.5,
+                       label='Carina', zorder=10)
+        
+        title = f'Cleaned\n({np.sum(self.cleaned_mask > 0):,} voxels)'
+        if self.trachea_removed:
+            title += '\n(Trachea removed)'
+        ax2.set_title(title)
         ax2.set_xlabel('X')
         ax2.set_ylabel('Y')
         ax2.set_zlabel('Z')
+        if self.carina_location is not None:
+            ax2.legend()
         
         # Difference
         ax3 = fig.add_subplot(133, projection='3d')
@@ -505,12 +795,19 @@ class SegmentationPreprocessor:
                     f.write(f"2nd largest: {self.component_stats['voxel_count'].iloc[1]:,} voxels\n")
                 f.write("\n")
             
+            if self.carina_location is not None:
+                f.write("\nCARINA IDENTIFICATION:\n")
+                f.write(f"Position (z,y,x): ({self.carina_location[0]:.1f}, "
+                       f"{self.carina_location[1]:.1f}, {self.carina_location[2]:.1f})\n")
+                f.write(f"Trachea removed: {'Yes' if self.trachea_removed else 'No'}\n\n")
+            
             if self.reconnection_info:
                 f.write("\nRECONNECTION ATTEMPTS:\n")
                 for info in self.reconnection_info:
                     status = "✓ Reconnected" if info['reconnected'] else "✗ Kept isolated"
+                    distance_type = info.get('distance_type', 'Euclidean')
                     f.write(f"Component {info['component_id']}: {info['size_voxels']} voxels, "
-                           f"distance {info['distance_mm']:.2f} mm - {status}\n")
+                           f"{distance_type} distance {info['distance_mm']:.2f} mm - {status}\n")
         
         print(f"Report saved: {report_path}")
         
@@ -524,15 +821,17 @@ class SegmentationPreprocessor:
                               try_reconnection=True,
                               max_reconnect_distance_mm=10.0,
                               min_component_size=50,
+                              remove_trachea=True,
                               visualize=True):
         """
-        Runs complete preprocessing pipeline
+        Runs complete preprocessing pipeline with trachea removal
         
         Args:
             output_dir: Output directory
             try_reconnection: Whether to attempt reconnecting components
             max_reconnect_distance_mm: Max distance for reconnection
             min_component_size: Min size for reconnection attempt
+            remove_trachea: Whether to identify and remove trachea
             visualize: Generate visualizations
         """
         print("\n" + "="*60)
@@ -544,28 +843,48 @@ class SegmentationPreprocessor:
         # 1. Analyze components
         self.analyze_components()
         
-        # 2. Decision: reconnect or just keep largest?
+        # 2. Keep largest component
+        self.keep_largest_component()
+        
+        # 3. Compute preliminary skeleton (for trachea removal and path distances)
+        if remove_trachea or try_reconnection:
+            self.compute_preliminary_skeleton_and_graph()
+        
+        # 4. Remove trachea (if requested)
+        if remove_trachea:
+            self.identify_and_remove_trachea()
+            
+            # Re-analyze components after trachea removal
+            print("\nRe-analyzing components after trachea removal...")
+            self.analyze_components()
+            self.keep_largest_component()
+            
+            # Recompute skeleton on bronchi-only mask
+            if try_reconnection:
+                print("\nRecomputing skeleton on bronchi-only mask...")
+                self.compute_preliminary_skeleton_and_graph()
+        
+        # 5. Reconnection (path-based if skeleton available)
         if try_reconnection and len(self.component_stats) > 1:
             self.reconnect_nearby_components(
                 max_distance_mm=max_reconnect_distance_mm,
-                min_component_size=min_component_size
+                min_component_size=min_component_size,
+                use_path_distance=True  # Use path-based distances
             )
-        else:
-            self.keep_largest_component()
         
-        # 3. Morphological cleanup
+        # 6. Morphological cleanup
         self.morphological_cleanup(
             remove_small_holes=True,
             hole_size_mm3=50,
             smooth_surface=False
         )
         
-        # 4. Save results
-        cleaned_path = os.path.join(output_dir, "cleaned_airway_mask.nii.gz")
+        # 7. Save results
+        cleaned_path = os.path.join(output_dir, "cleaned_airway_mask_bronchi_only.nii.gz")
         self.save_cleaned_mask(cleaned_path)
         self.save_report(output_dir)
         
-        # 5. Visualizations
+        # 8. Visualizations
         if visualize:
             self.visualize_components_3d(
                 save_path=os.path.join(output_dir, "components_3d.png")
@@ -578,6 +897,8 @@ class SegmentationPreprocessor:
         print("PREPROCESSING COMPLETED!")
         print("="*60)
         print(f"\nCleaned mask ready: {cleaned_path}")
-        print("You can now use this for skeletonization")
+        if self.trachea_removed:
+            print("✓ Trachea removed - mask contains BRONCHI ONLY (from carina)")
+        print("You can now use this for detailed bronchial tree analysis")
         
         return self.cleaned_mask, cleaned_path

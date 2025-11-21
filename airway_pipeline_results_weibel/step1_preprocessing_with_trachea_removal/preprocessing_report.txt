@@ -16,3 +16,8 @@ Total components found: 13
 Largest component: 49,521 voxels
 2nd largest: 14 voxels
 
+
+CARINA IDENTIFICATION:
+Position (z,y,x): (308.0, 153.0, 197.0)
+Trachea removed: Yes
+

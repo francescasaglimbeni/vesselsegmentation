@@ -1,16 +1,14 @@
 === BRONCHIAL TREE ANALYSIS ===
 
-Input file: airway_pipeline_results_v2\step1_preprocessing\cleaned_airway_mask.nii.gz
+Input file: airway_pipeline_results_weibel\step1_preprocessing_with_trachea_removal\cleaned_airway_mask_bronchi_only.nii.gz
 Spacing (x,y,z): (0.7792969942092896, 0.7792969942092896, 0.699999988079071) mm
 Shape (z,y,x): (445, 282, 426)
 
 Skeleton voxels: 1086
 
 SKELETON CONNECTED COMPONENTS:
-  Total number of components: 1
-  Largest component: 1086 voxels (461.67 mm³)
-  Smallest component: 1086 voxels (461.67 mm³)
-  Percentage of voxels in main component: 100.0%
+  Total components: 1
+  Largest component: 1086 voxels
 
 BRANCH METRICS:
   Number of branches: 73
@@ -18,11 +16,15 @@ BRANCH METRICS:
   Min diameter: 1.40 mm
   Max diameter: 15.33 mm
   Mean length: 14.72 mm
-  Min length: 2.35 mm
-  Max length: 66.78 mm
   Total airway length: 1074.80 mm
   Total airway volume: 15879.63 mm³
 
 BIFURCATIONS:
   Number: 36
   Average degree: 3.00
+
+WEIBEL GENERATION ANALYSIS:
+  Maximum generation: 8
+  Number of generations: 8
+  Mean tapering ratio: 1.362
+  Weibel theoretical ratio: 0.794

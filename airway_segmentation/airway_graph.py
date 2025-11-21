@@ -11,22 +11,25 @@ import pandas as pd
 from matplotlib.colors import Normalize
 import matplotlib.cm as cm
 from scipy import ndimage
+from collections import deque
 
 
 class AirwayGraphAnalyzer:
     """
-    Analyzes the 3D structure of airways:
+    Analyzes the 3D structure of airways with Weibel generation analysis:
     - Generates 3D skeleton
     - Builds topological graph
     - Calculates diameters and lengths along branches
     - Identifies and analyzes bifurcations
+    - Classifies branches by generation (Weibel model)
+    - Analyzes diameter tapering across generations
     - Analyzes and manages connected components of the skeleton
     """
     
     def __init__(self, airway_mask_path, spacing=None):
         """
         Args:
-            airway_mask_path: Path to .nii.gz airway mask file
+            airway_mask_path: Path to .nii.gz airway mask file (bronchi only, no trachea)
             spacing: Tuple (x,y,z) of spacing in mm. If None, reads from image
         """
         self.mask_path = airway_mask_path
@@ -51,6 +54,11 @@ class AirwayGraphAnalyzer:
         self.connected_components = None
         self.component_stats = None
         
+        # Generation analysis
+        self.carina_node = None
+        self.generation_assignments = None
+        self.weibel_analysis_df = None
+        
     def compute_skeleton(self):
         """Computes the 3D skeleton of the mask"""
         print("\n=== 3D Skeletonization ===")
@@ -62,7 +70,7 @@ class AirwayGraphAnalyzer:
         print("Computing 3D skeleton (may take a few minutes)...")
         self.skeleton = skeletonize(binary_mask)
         
-        self.skeleton_voxels = np.sum(self.skeleton > 0)  # SAVE AS ATTRIBUTE
+        self.skeleton_voxels = np.sum(self.skeleton > 0)
         print(f"Skeleton computed: {self.skeleton_voxels} voxels")
         
         # Compute distance transform for diameters
@@ -279,10 +287,10 @@ class AirwayGraphAnalyzer:
         p1 = np.array(point1, dtype=int)
         p2 = np.array(point2, dtype=int)
         
-        # Calculate number of intermediate points (at least 3 points for short bridges)
+        # Calculate number of intermediate points
         distance_pixels = np.linalg.norm(p2 - p1)
         distance_mm = distance_pixels * np.mean(self.spacing)
-        num_points = max(3, int(distance_mm / 2))  # Points every ~2mm
+        num_points = max(3, int(distance_mm / 2))
         
         # Generate points along the line
         for t in np.linspace(0, 1, num_points):
@@ -298,7 +306,6 @@ class AirwayGraphAnalyzer:
         # Add small sphere at endpoints for robustness
         for point in [p1, p2]:
             z, y, x = point[0], point[1], point[2]
-            # Small 3x3x3 sphere
             for dz in [-1, 0, 1]:
                 for dy in [-1, 0, 1]:
                     for dx in [-1, 0, 1]:
@@ -307,118 +314,6 @@ class AirwayGraphAnalyzer:
                             0 <= ny < skeleton_array.shape[1] and 
                             0 <= nx < skeleton_array.shape[2]):
                             skeleton_array[nz, ny, nx] = 1
-    
-    def visualize_connected_components(self, save_path=None, max_components=10, min_voxels=5):
-        """Visualizes connected components of skeleton with different colors - IMPROVED VERSION"""
-        print("\n=== CONNECTED COMPONENTS VISUALIZATION ===")
-        
-        if self.connected_components is None:
-            raise ValueError("Analyze connected components first with analyze_connected_components()")
-        
-        # Filter components by minimum size
-        large_components = self.component_stats[self.component_stats['voxel_count'] >= min_voxels]
-        components_to_plot = min(max_components, len(large_components))
-        
-        print(f"Visualizing {components_to_plot} components with at least {min_voxels} voxels")
-        
-        fig = plt.figure(figsize=(16, 12))
-        ax = fig.add_subplot(111, projection='3d')
-        
-        # Create colormap for components
-        colors = plt.cm.tab20(np.linspace(0, 1, components_to_plot))
-        
-        total_plotted = 0
-        for i in range(components_to_plot):
-            comp_id = large_components.iloc[i]['component_id']
-            voxel_count = large_components.iloc[i]['voxel_count']
-            
-            # Find component coordinates
-            component_coords = np.argwhere(self.connected_components == comp_id)
-            
-            if len(component_coords) > 0:
-                # For small components, show all points
-                if voxel_count < 100:
-                    subsample = 1
-                    marker_size = 20
-                else:
-                    # For large components, subsampling
-                    subsample = max(1, len(component_coords) // 500)
-                    marker_size = 10
-                
-                component_coords_subsampled = component_coords[::subsample]
-                
-                ax.scatter(component_coords_subsampled[:, 2], 
-                        component_coords_subsampled[:, 1], 
-                        component_coords_subsampled[:, 0],
-                        c=[colors[i]], marker='o', s=marker_size, alpha=0.8,
-                        label=f'Comp {comp_id} ({voxel_count} voxels)')
-                
-                total_plotted += len(component_coords_subsampled)
-        
-        ax.set_xlabel('X (voxel)')
-        ax.set_ylabel('Y (voxel)')
-        ax.set_zlabel('Z (voxel)')
-        ax.set_title(f'Connected Components of Skeleton\n{components_to_plot} components visualized, {total_plotted} total points')
-        ax.legend(bbox_to_anchor=(1.15, 1), loc='upper left', fontsize=8)
-        
-        # Set axis limits for zoom on interesting region
-        if len(large_components) > 0:
-            main_component_id = large_components.iloc[0]['component_id']
-            main_component_coords = np.argwhere(self.connected_components == main_component_id)
-            if len(main_component_coords) > 0:
-                z_mean, y_mean, x_mean = np.mean(main_component_coords, axis=0)
-                z_std, y_std, x_std = np.std(main_component_coords, axis=0)
-                
-                # Zoom on ±3 standard deviations from main component
-                ax.set_xlim(x_mean - 3*x_std, x_mean + 3*x_std)
-                ax.set_ylim(y_mean - 3*y_std, y_mean + 3*y_std)
-                ax.set_zlim(z_mean - 3*z_std, z_mean + 3*z_std)
-        
-        plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=150, bbox_inches='tight')
-            print(f"Component visualization saved: {save_path}")
-        
-        plt.show()
-    
-    def visualize_component_size_distribution(self, save_path=None):
-        """Visualizes the size distribution of connected components"""
-        if self.component_stats is None:
-            raise ValueError("Analyze connected components first with analyze_connected_components()")
-        
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        
-        # Histogram of component sizes
-        axes[0].hist(self.component_stats['voxel_count'], bins=30, edgecolor='black', alpha=0.7)
-        axes[0].set_xlabel('Number of voxels per component')
-        axes[0].set_ylabel('Frequency')
-        axes[0].set_title('Connected Components Size Distribution')
-        axes[0].set_yscale('log')
-        axes[0].grid(True, alpha=0.3)
-        
-        # Rank-size plot (components ordered by size)
-        sizes_sorted = np.sort(self.component_stats['voxel_count'])[::-1]
-        ranks = np.arange(1, len(sizes_sorted) + 1)
-        
-        axes[1].loglog(ranks, sizes_sorted, 'bo-', alpha=0.7)
-        axes[1].set_xlabel('Rank (size order)')
-        axes[1].set_ylabel('Size (voxels)')
-        axes[1].set_title('Rank-Size Distribution of Components')
-        axes[1].grid(True, alpha=0.3)
-        
-        # Add annotations for first 3 components
-        for i in range(min(3, len(sizes_sorted))):
-            axes[1].annotate(f'#{i+1}', (ranks[i], sizes_sorted[i]), 
-                        xytext=(5, 5), textcoords='offset points')
-        
-        plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=150, bbox_inches='tight')
-            print(f"Size distribution saved: {save_path}")
-        
-        plt.show()
     
     def build_graph(self):
         """Builds graph from skeleton using skan"""
@@ -462,6 +357,129 @@ class AirwayGraphAnalyzer:
         
         return G
     
+    def identify_carina(self):
+        """
+        Identifies the carina as the root node of the bronchial tree.
+        The carina is typically the node with the highest degree (usually 2-3)
+        and largest associated diameters.
+        """
+        print("\n=== CARINA IDENTIFICATION ===")
+        
+        if self.graph is None:
+            raise ValueError("Build graph first with build_graph()")
+        
+        # Find nodes with degree >= 2 (potential bifurcations)
+        candidate_nodes = [node for node in self.graph.nodes() 
+                          if self.graph.degree(node) >= 2]
+        
+        if len(candidate_nodes) == 0:
+            print("WARNING: No bifurcation nodes found!")
+            # Fallback: use node with highest degree
+            degrees = dict(self.graph.degree())
+            self.carina_node = max(degrees, key=degrees.get)
+        else:
+            # Calculate average diameter for edges connected to each candidate
+            node_info = []
+            for node in candidate_nodes:
+                pos = self.graph.nodes[node]['pos']
+                z, y, x = int(pos[0]), int(pos[1]), int(pos[2])
+                
+                # Get diameter at node position
+                if (0 <= z < self.distance_transform.shape[0] and
+                    0 <= y < self.distance_transform.shape[1] and
+                    0 <= x < self.distance_transform.shape[2]):
+                    diameter = self.distance_transform[z, y, x] * 2
+                else:
+                    diameter = 0
+                
+                node_info.append({
+                    'node': node,
+                    'degree': self.graph.degree(node),
+                    'diameter': diameter,
+                    'z': z
+                })
+            
+            # Sort by diameter (descending) then by z-coordinate (ascending - superior)
+            node_info.sort(key=lambda x: (-x['diameter'], x['z']))
+            
+            self.carina_node = node_info[0]['node']
+            
+            print(f"Carina identified: Node {self.carina_node}")
+            print(f"  Degree: {node_info[0]['degree']}")
+            print(f"  Diameter: {node_info[0]['diameter']:.2f} mm")
+            print(f"  Position (z,y,x): ({node_info[0]['z']}, "
+                  f"{self.graph.nodes[self.carina_node]['pos'][1]:.1f}, "
+                  f"{self.graph.nodes[self.carina_node]['pos'][2]:.1f})")
+        
+        return self.carina_node
+    
+    def assign_generations_weibel(self):
+        """
+        Assigns Weibel generation numbers to each branch using breadth-first search
+        from the carina (generation 0).
+        
+        Weibel model:
+        - Generation 0: Main bronchi (starting from carina)
+        - Generation 1+: Each bifurcation increases generation by 1
+        - Typical human lungs have ~23 generations
+        """
+        print("\n=== WEIBEL GENERATION ASSIGNMENT ===")
+        
+        if self.carina_node is None:
+            self.identify_carina()
+        
+        if self.graph is None:
+            raise ValueError("Build graph first")
+        
+        # Initialize generation assignments
+        node_generations = {self.carina_node: 0}
+        branch_generations = {}
+        
+        # Breadth-first search from carina
+        queue = deque([(self.carina_node, 0)])
+        visited = {self.carina_node}
+        
+        while queue:
+            current_node, current_gen = queue.popleft()
+            
+            # Visit all neighbors
+            for neighbor in self.graph.neighbors(current_node):
+                if neighbor not in visited:
+                    # Child node is in next generation if current node is a bifurcation
+                    if self.graph.degree(current_node) >= 3:
+                        # Bifurcation point: increase generation
+                        next_gen = current_gen + 1
+                    else:
+                        # Continuation: same generation
+                        next_gen = current_gen
+                    
+                    node_generations[neighbor] = next_gen
+                    visited.add(neighbor)
+                    queue.append((neighbor, next_gen))
+                    
+                    # Assign generation to the branch (edge)
+                    edge = tuple(sorted([current_node, neighbor]))
+                    branch_generations[edge] = next_gen
+        
+        self.generation_assignments = {
+            'nodes': node_generations,
+            'branches': branch_generations
+        }
+        
+        # Statistics
+        max_generation = max(node_generations.values())
+        generation_counts = {}
+        for gen in node_generations.values():
+            generation_counts[gen] = generation_counts.get(gen, 0) + 1
+        
+        print(f"Generation assignment complete:")
+        print(f"  Maximum generation: {max_generation}")
+        print(f"  Number of nodes per generation:")
+        for gen in sorted(generation_counts.keys()):
+            print(f"    Gen {gen}: {generation_counts[gen]} nodes")
+        
+        return self.generation_assignments
+    
     def calculate_branch_lengths(self):
         """
         Calculates the actual length of each branch by measuring the path
@@ -482,17 +500,14 @@ class AirwayGraphAnalyzer:
                 coords_indices = self.skeleton_obj.path_coordinates(branch_idx)
                 
                 if len(coords_indices) < 2:
-                    # Single point branch
                     length_mm = 0.0
                 else:
-                    # Calculate cumulative length along the path
+                    # Calculate cumulative length
                     length_mm = 0.0
                     for i in range(len(coords_indices) - 1):
                         p1 = coords_indices[i]
                         p2 = coords_indices[i + 1]
                         
-                        # Calculate physical distance between consecutive points
-                        # coords are in (z, y, x) format
                         dz = (p2[0] - p1[0]) * self.spacing[2]
                         dy = (p2[1] - p1[1]) * self.spacing[1]
                         dx = (p2[2] - p1[2]) * self.spacing[0]
@@ -504,7 +519,7 @@ class AirwayGraphAnalyzer:
                     'branch_id': branch_idx,
                     'length_mm': length_mm,
                     'num_points': len(coords_indices),
-                    'skan_distance_mm': row['branch-distance']  # For comparison
+                    'skan_distance_mm': row['branch-distance']
                 })
                 
             except Exception as e:
@@ -525,12 +540,6 @@ class AirwayGraphAnalyzer:
         print(f"  Min length: {self.branch_lengths_df['length_mm'].min():.2f}")
         print(f"  Max length: {self.branch_lengths_df['length_mm'].max():.2f}")
         print(f"  Total airway length: {self.branch_lengths_df['length_mm'].sum():.2f}")
-        
-        # Compare with skan distances
-        length_diff = np.abs(self.branch_lengths_df['length_mm'] - self.branch_lengths_df['skan_distance_mm'])
-        print(f"\nComparison with skan distances:")
-        print(f"  Mean difference: {length_diff.mean():.2f} mm")
-        print(f"  Max difference: {length_diff.max():.2f} mm")
         
         return self.branch_lengths_df
     
@@ -586,7 +595,7 @@ class AirwayGraphAnalyzer:
     
     def merge_branch_metrics(self):
         """
-        Merges diameters and lengths into a single comprehensive branch dataframe
+        Merges diameters, lengths, and generation info into comprehensive branch dataframe
         """
         print("\n=== Merging Branch Metrics ===")
         
@@ -604,6 +613,20 @@ class AirwayGraphAnalyzer:
             how='inner'
         )
         
+        # Add generation information
+        if self.generation_assignments is not None:
+            generations = []
+            for idx, row in self.branch_data.iterrows():
+                node_src = int(row['node-id-src'])
+                node_dst = int(row['node-id-dst'])
+                edge = tuple(sorted([node_src, node_dst]))
+                
+                # Get generation from branch assignments
+                gen = self.generation_assignments['branches'].get(edge, np.nan)
+                generations.append(gen)
+            
+            self.branch_metrics_df['generation'] = generations
+        
         # Calculate additional metrics
         self.branch_metrics_df['volume_mm3'] = (
             np.pi * (self.branch_metrics_df['diameter_mean_mm'] / 2) ** 2 * 
@@ -620,6 +643,204 @@ class AirwayGraphAnalyzer:
         
         return self.branch_metrics_df
     
+    def analyze_weibel_tapering(self):
+        """
+        Analyzes diameter tapering across generations according to Weibel model.
+        Computes statistics for each generation and analyzes tapering ratios.
+        """
+        print("\n" + "="*60)
+        print("WEIBEL GENERATION TAPERING ANALYSIS")
+        print("="*60)
+        
+        if not hasattr(self, 'branch_metrics_df'):
+            raise ValueError("Merge branch metrics first")
+        
+        if 'generation' not in self.branch_metrics_df.columns:
+            raise ValueError("Assign generations first with assign_generations_weibel()")
+        
+        # Group by generation
+        generation_stats = []
+        
+        for gen in sorted(self.branch_metrics_df['generation'].dropna().unique()):
+            gen_data = self.branch_metrics_df[self.branch_metrics_df['generation'] == gen]
+            
+            if len(gen_data) == 0:
+                continue
+            
+            stats = {
+                'generation': int(gen),
+                'n_branches': len(gen_data),
+                'diameter_mean_mm': gen_data['diameter_mean_mm'].mean(),
+                'diameter_std_mm': gen_data['diameter_mean_mm'].std(),
+                'diameter_median_mm': gen_data['diameter_mean_mm'].median(),
+                'diameter_min_mm': gen_data['diameter_mean_mm'].min(),
+                'diameter_max_mm': gen_data['diameter_mean_mm'].max(),
+                'length_mean_mm': gen_data['length_mm'].mean(),
+                'length_std_mm': gen_data['length_mm'].std(),
+                'length_median_mm': gen_data['length_mm'].median(),
+                'total_volume_mm3': gen_data['volume_mm3'].sum(),
+                'total_surface_area_mm2': gen_data['surface_area_mm2'].sum()
+            }
+            
+            generation_stats.append(stats)
+        
+        self.weibel_analysis_df = pd.DataFrame(generation_stats)
+        
+        # Calculate tapering ratios (diameter_n / diameter_n+1)
+        tapering_ratios = []
+        for i in range(len(self.weibel_analysis_df) - 1):
+            current_gen = self.weibel_analysis_df.iloc[i]
+            next_gen = self.weibel_analysis_df.iloc[i + 1]
+            
+            ratio = current_gen['diameter_mean_mm'] / next_gen['diameter_mean_mm']
+            tapering_ratios.append({
+                'from_generation': int(current_gen['generation']),
+                'to_generation': int(next_gen['generation']),
+                'diameter_ratio': ratio
+            })
+        
+        self.tapering_ratios_df = pd.DataFrame(tapering_ratios)
+        
+        # Print results
+        print(f"\nGeneration statistics:")
+        print(self.weibel_analysis_df.to_string(index=False))
+        
+        print(f"\n{'='*60}")
+        print("TAPERING RATIOS (Weibel Model)")
+        print(f"{'='*60}")
+        print("\nDiameter reduction ratios between consecutive generations:")
+        print(self.tapering_ratios_df.to_string(index=False))
+        
+        if len(self.tapering_ratios_df) > 0:
+            mean_ratio = self.tapering_ratios_df['diameter_ratio'].mean()
+            print(f"\nMean tapering ratio: {mean_ratio:.3f}")
+            print(f"(Weibel's theoretical model predicts ~0.793 for symmetric branching)")
+            
+            # Compare with Weibel's model
+            weibel_expected = 2**(-1/3)  # ~0.793 for symmetric dichotomous branching
+            print(f"\nWeibel's theoretical ratio: {weibel_expected:.3f}")
+            print(f"Observed mean ratio: {mean_ratio:.3f}")
+            print(f"Difference: {abs(mean_ratio - weibel_expected):.3f}")
+        
+        return self.weibel_analysis_df, self.tapering_ratios_df
+    
+    def calculate_distances_from_carina(self):
+        """
+        Calculates cumulative PATH distances from the carina to each endpoint.
+        Uses shortest path along the graph (not Euclidean distance).
+        """
+        print("\n=== DISTANCE FROM CARINA CALCULATION (PATH-BASED) ===")
+        
+        if self.graph is None:
+            raise ValueError("Build graph first with build_graph()")
+        
+        if not hasattr(self, 'branch_metrics_df'):
+            raise ValueError("Calculate branch metrics first with merge_branch_metrics()")
+        
+        if self.carina_node is None:
+            self.identify_carina()
+        
+        print(f"Calculating path distances from carina (Node {self.carina_node})...")
+        
+        # Calculate shortest path distances from carina to all nodes
+        try:
+            distances_from_carina = nx.single_source_dijkstra_path_length(
+                self.graph, 
+                self.carina_node, 
+                weight='length'
+            )
+        except nx.NetworkXError as e:
+            print(f"Error calculating distances: {e}")
+            print("Using connected component containing carina.")
+            connected_nodes = nx.node_connected_component(self.graph, self.carina_node)
+            subgraph = self.graph.subgraph(connected_nodes)
+            distances_from_carina = nx.single_source_dijkstra_path_length(
+                subgraph, 
+                self.carina_node, 
+                weight='length'
+            )
+        
+        print(f"Calculated path distances for {len(distances_from_carina)} nodes")
+        
+        # For each branch, determine cumulative distance from carina
+        branch_distances = []
+        
+        for idx, row in self.branch_data.iterrows():
+            branch_id = idx
+            node_src = int(row['node-id-src'])
+            node_dst = int(row['node-id-dst'])
+            branch_length = row['branch-distance']
+            
+            # Get path distances from carina to both endpoints
+            dist_src = distances_from_carina.get(node_src, np.nan)
+            dist_dst = distances_from_carina.get(node_dst, np.nan)
+            
+            # Proximal end is closer to carina
+            if not np.isnan(dist_src) and not np.isnan(dist_dst):
+                proximal_distance = min(dist_src, dist_dst)
+                distal_distance = max(dist_src, dist_dst)
+                proximal_node = node_src if dist_src < dist_dst else node_dst
+                distal_node = node_dst if dist_src < dist_dst else node_src
+            elif not np.isnan(dist_src):
+                proximal_distance = dist_src
+                distal_distance = dist_src + branch_length
+                proximal_node = node_src
+                distal_node = node_dst
+            elif not np.isnan(dist_dst):
+                proximal_distance = dist_dst
+                distal_distance = dist_dst + branch_length
+                proximal_node = node_dst
+                distal_node = node_src
+            else:
+                proximal_distance = np.nan
+                distal_distance = np.nan
+                proximal_node = node_src
+                distal_node = node_dst
+            
+            branch_distances.append({
+                'branch_id': branch_id,
+                'proximal_node': proximal_node,
+                'distal_node': distal_node,
+                'distance_from_carina_proximal_mm': proximal_distance,
+                'distance_from_carina_distal_mm': distal_distance,
+                'branch_length_mm': branch_length
+            })
+        
+        self.branch_distances_from_carina_df = pd.DataFrame(branch_distances)
+        
+        # Merge with existing branch metrics
+        self.branch_metrics_df = pd.merge(
+            self.branch_metrics_df,
+            self.branch_distances_from_carina_df[['branch_id', 
+                                                'proximal_node', 
+                                                'distal_node',
+                                                'distance_from_carina_proximal_mm',
+                                                'distance_from_carina_distal_mm']],
+            on='branch_id',
+            how='left'
+        )
+        
+        print("\nPath distance from carina statistics:")
+        valid_distances = self.branch_metrics_df['distance_from_carina_distal_mm'].dropna()
+        if len(valid_distances) > 0:
+            print(f"  Min distance (proximal branches): {valid_distances.min():.2f} mm")
+            print(f"  Max distance (distal branches): {valid_distances.max():.2f} mm")
+            print(f"  Mean distance: {valid_distances.mean():.2f} mm")
+            print(f"  Median distance: {valid_distances.median():.2f} mm")
+        
+        # Find endpoints
+        endpoint_nodes = [node for node in self.graph.nodes() if self.graph.degree(node) == 1]
+        endpoint_distances = [distances_from_carina.get(node, np.nan) for node in endpoint_nodes]
+        endpoint_distances = [d for d in endpoint_distances if not np.isnan(d)]
+        
+        if endpoint_distances:
+            print(f"\nEndpoint statistics ({len(endpoint_distances)} endpoints):")
+            print(f"  Closest endpoint to carina: {min(endpoint_distances):.2f} mm")
+            print(f"  Farthest endpoint from carina: {max(endpoint_distances):.2f} mm")
+            print(f"  Mean endpoint distance: {np.mean(endpoint_distances):.2f} mm")
+        
+        return self.branch_metrics_df
+
     def identify_bifurcations(self):
         """Identifies bifurcations (nodes with degree >= 3)"""
         print("\n=== Bifurcation Identification ===")
@@ -632,8 +853,11 @@ class AirwayGraphAnalyzer:
         for node in self.graph.nodes():
             degree = self.graph.degree(node)
             
-            if degree >= 3:  # Bifurcation (or higher branching point)
+            if degree >= 3:
                 pos = self.graph.nodes[node]['pos']
+                
+                # Get generation if available
+                generation = self.generation_assignments['nodes'].get(node, np.nan) if self.generation_assignments else np.nan
                 
                 # Get connected branches
                 connected_branches = list(self.graph.edges(node))
@@ -643,6 +867,7 @@ class AirwayGraphAnalyzer:
                     'position': pos,
                     'degree': degree,
                     'num_branches': len(connected_branches),
+                    'generation': generation,
                     'z': pos[0],
                     'y': pos[1],
                     'x': pos[2]
@@ -654,108 +879,305 @@ class AirwayGraphAnalyzer:
         if len(self.bifurcations_df) > 0:
             print(f"  Average degree: {self.bifurcations_df['degree'].mean():.2f}")
             print(f"  Max degree: {self.bifurcations_df['degree'].max()}")
+            
+            if 'generation' in self.bifurcations_df.columns:
+                gen_counts = self.bifurcations_df['generation'].value_counts().sort_index()
+                print(f"\nBifurcations per generation:")
+                for gen, count in gen_counts.items():
+                    if not np.isnan(gen):
+                        print(f"  Generation {int(gen)}: {count} bifurcations")
         
         return self.bifurcations_df
     
-    def visualize_branches_3d(self, save_path=None, colormap='viridis', max_branches=1000, color_by='diameter'):
+    def visualize_weibel_generations(self, save_path=None, max_generation=None):
         """
-        Visualizes 3D branches/edges colored by mean diameter or length
-        
-        Args:
-            color_by: 'diameter' or 'length'
+        Visualizes branches colored by Weibel generation
         """
-        print("\n=== 3D Branches/Edges Visualization ===")
+        print("\n=== WEIBEL GENERATION VISUALIZATION ===")
         
-        if not hasattr(self, 'branch_metrics_df'):
-            raise ValueError("Calculate metrics first with merge_branch_metrics()")
+        if 'generation' not in self.branch_metrics_df.columns:
+            raise ValueError("Assign generations first with assign_generations_weibel()")
         
-        fig = plt.figure(figsize=(14, 10))
+        fig = plt.figure(figsize=(16, 12))
         ax = fig.add_subplot(111, projection='3d')
         
-        # Choose color metric
-        if color_by == 'length':
-            color_values = self.branch_metrics_df['length_mm']
-            color_label = 'Length (mm)'
+        # Filter by max generation if specified
+        if max_generation is not None:
+            plot_data = self.branch_metrics_df[self.branch_metrics_df['generation'] <= max_generation]
         else:
-            color_values = self.branch_metrics_df['diameter_mean_mm']
-            color_label = 'Mean Diameter (mm)'
+            plot_data = self.branch_metrics_df
         
-        # Normalize for colormap
-        norm = Normalize(vmin=color_values.min(), vmax=color_values.max())
-        cmap = plt.colormaps[colormap]
+        # Use discrete colormap for generations
+        max_gen = int(plot_data['generation'].max())
+        colors = plt.cm.tab20(np.linspace(0, 1, max_gen + 1))
         
-        # Plot each branch as line
         plotted_count = 0
-        for idx, row in self.branch_metrics_df.iterrows():
-            if plotted_count >= max_branches:
-                break
-                
+        for idx, row in plot_data.iterrows():
+            if pd.isna(row['generation']):
+                continue
+            
             branch_id = int(row['branch_id'])
-            color_value = row[color_label.split()[0].lower() + '_mm' if color_by == 'length' else 'diameter_mean_mm']
+            generation = int(row['generation'])
             
             try:
-                # Get branch coordinates
                 coords = self.skeleton_obj.path_coordinates(branch_id)
                 
                 if len(coords) > 1:
-                    # Extract x, y, z coordinates
                     z_coords = coords[:, 0]
                     y_coords = coords[:, 1]
                     x_coords = coords[:, 2]
                     
-                    # Color by selected metric
-                    color = cmap(norm(color_value))
+                    color = colors[generation % len(colors)]
                     
-                    # Plot branch as line
-                    line = ax.plot(x_coords, y_coords, z_coords, 
-                                 color=color, linewidth=2, alpha=0.8)
+                    ax.plot(x_coords, y_coords, z_coords, 
+                           color=color, linewidth=2, alpha=0.8)
                     plotted_count += 1
                     
             except Exception as e:
-                print(f"Warning: Error plotting branch {branch_id}: {e}")
                 continue
         
         print(f"Branches plotted: {plotted_count}")
         
-        # Add colorbar
-        sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
-        sm.set_array([])
-        cbar = plt.colorbar(sm, ax=ax, shrink=0.8, aspect=20)
-        cbar.set_label(color_label, rotation=270, labelpad=20)
+        # Create legend
+        legend_elements = [plt.Line2D([0], [0], color=colors[i % len(colors)], 
+                                     linewidth=2, label=f'Gen {i}')
+                          for i in range(max_gen + 1)]
+        ax.legend(handles=legend_elements, bbox_to_anchor=(1.15, 1), 
+                 loc='upper left', fontsize=9)
         
-        ax.set_xlabel('X (mm)')
-        ax.set_ylabel('Y (mm)')
-        ax.set_zlabel('Z (mm)')
-        ax.set_title(f'Bronchial Tree Branches - Colored by {color_label}\n{plotted_count} branches visualized')
+        ax.set_xlabel('X (voxel)')
+        ax.set_ylabel('Y (voxel)')
+        ax.set_zlabel('Z (voxel)')
+        ax.set_title(f'Bronchial Tree - Weibel Generations\n{plotted_count} branches, {max_gen+1} generations')
         
         if save_path:
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
-            print(f"Branch visualization saved: {save_path}")
+            print(f"Visualization saved: {save_path}")
+        
+        plt.show()
+    
+    def plot_weibel_tapering_analysis(self, save_path=None):
+        """
+        Creates comprehensive visualization of diameter tapering across generations
+        """
+        if not hasattr(self, 'weibel_analysis_df'):
+            raise ValueError("Run analyze_weibel_tapering() first")
+        
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        
+        # 1. Mean diameter by generation
+        ax1 = axes[0, 0]
+        generations = self.weibel_analysis_df['generation']
+        diameters = self.weibel_analysis_df['diameter_mean_mm']
+        errors = self.weibel_analysis_df['diameter_std_mm']
+        
+        ax1.errorbar(generations, diameters, yerr=errors, 
+                    marker='o', markersize=8, capsize=5, linewidth=2)
+        ax1.set_xlabel('Generation')
+        ax1.set_ylabel('Mean Diameter (mm)')
+        ax1.set_title('Airway Diameter Tapering Across Generations\n(Weibel Model)')
+        ax1.grid(True, alpha=0.3)
+        ax1.set_xticks(generations)
+        
+        # Add Weibel's theoretical curve
+        if len(generations) > 1:
+            gen_0_diameter = diameters.iloc[0]
+            theoretical_diameters = [gen_0_diameter * (2**(-1/3))**g for g in generations]
+            ax1.plot(generations, theoretical_diameters, 
+                    'r--', linewidth=2, alpha=0.7, label='Weibel theoretical')
+            ax1.legend()
+        
+        # 2. Diameter tapering ratios
+        ax2 = axes[0, 1]
+        if hasattr(self, 'tapering_ratios_df') and len(self.tapering_ratios_df) > 0:
+            x_labels = [f"{row['from_generation']}→{row['to_generation']}" 
+                       for _, row in self.tapering_ratios_df.iterrows()]
+            ratios = self.tapering_ratios_df['diameter_ratio']
+            
+            ax2.bar(range(len(ratios)), ratios, alpha=0.7, edgecolor='black')
+            ax2.axhline(y=2**(-1/3), color='r', linestyle='--', 
+                       linewidth=2, label='Weibel theoretical (0.793)')
+            ax2.set_xlabel('Generation Transition')
+            ax2.set_ylabel('Diameter Ratio')
+            ax2.set_title('Diameter Reduction Ratios Between Generations')
+            ax2.set_xticks(range(len(ratios)))
+            ax2.set_xticklabels(x_labels, rotation=45, ha='right')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3, axis='y')
+        
+        # 3. Number of branches per generation
+        ax3 = axes[1, 0]
+        n_branches = self.weibel_analysis_df['n_branches']
+        ax3.bar(generations, n_branches, alpha=0.7, edgecolor='black', color='green')
+        ax3.set_xlabel('Generation')
+        ax3.set_ylabel('Number of Branches')
+        ax3.set_title('Branch Count by Generation')
+        ax3.set_xticks(generations)
+        ax3.grid(True, alpha=0.3, axis='y')
+        
+        # Add theoretical line (2^generation for perfect dichotomous branching)
+        theoretical_branches = [2**g for g in generations]
+        ax3.plot(generations, theoretical_branches, 
+                'r--', linewidth=2, alpha=0.7, label='Perfect dichotomy (2^n)')
+        ax3.legend()
+        
+        # 4. Mean branch length by generation
+        ax4 = axes[1, 1]
+        lengths = self.weibel_analysis_df['length_mean_mm']
+        length_errors = self.weibel_analysis_df['length_std_mm']
+        
+        ax4.errorbar(generations, lengths, yerr=length_errors,
+                    marker='s', markersize=8, capsize=5, 
+                    linewidth=2, color='purple')
+        ax4.set_xlabel('Generation')
+        ax4.set_ylabel('Mean Branch Length (mm)')
+        ax4.set_title('Branch Length Across Generations')
+        ax4.set_xticks(generations)
+        ax4.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Weibel analysis plot saved: {save_path}")
+        
+        plt.show()
+    
+    def visualize_distance_from_carina(self, save_path=None, colormap='viridis', max_branches=1000):
+        """
+        Visualizes branches colored by their PATH distance from the carina
+        """
+        print("\n=== DISTANCE FROM CARINA VISUALIZATION ===")
+        
+        if 'distance_from_carina_distal_mm' not in self.branch_metrics_df.columns:
+            raise ValueError("Calculate distances from carina first")
+        
+        fig = plt.figure(figsize=(14, 10))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        color_values = self.branch_metrics_df['distance_from_carina_distal_mm'].dropna()
+        
+        norm = Normalize(vmin=color_values.min(), vmax=color_values.max())
+        cmap = plt.colormaps[colormap]
+        
+        plotted_count = 0
+        for idx, row in self.branch_metrics_df.iterrows():
+            if plotted_count >= max_branches:
+                break
+            
+            if pd.isna(row['distance_from_carina_distal_mm']):
+                continue
+                
+            branch_id = int(row['branch_id'])
+            distance = row['distance_from_carina_distal_mm']
+            
+            try:
+                coords = self.skeleton_obj.path_coordinates(branch_id)
+                
+                if len(coords) > 1:
+                    z_coords = coords[:, 0]
+                    y_coords = coords[:, 1]
+                    x_coords = coords[:, 2]
+                    
+                    color = cmap(norm(distance))
+                    
+                    ax.plot(x_coords, y_coords, z_coords, 
+                           color=color, linewidth=2, alpha=0.8)
+                    plotted_count += 1
+                    
+            except Exception as e:
+                continue
+        
+        print(f"Branches plotted: {plotted_count}")
+        
+        sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, shrink=0.8, aspect=20)
+        cbar.set_label('Path Distance from Carina (mm)', rotation=270, labelpad=20)
+        
+        ax.set_xlabel('X (voxel)')
+        ax.set_ylabel('Y (voxel)')
+        ax.set_zlabel('Z (voxel)')
+        ax.set_title(f'Bronchial Tree - Path Distance from Carina\n{plotted_count} branches visualized')
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Visualization saved: {save_path}")
+        
+        plt.show()
+
+    def plot_distance_distributions(self, save_path=None):
+        """
+        Plots distributions of path distances from carina
+        """
+        if 'distance_from_carina_distal_mm' not in self.branch_metrics_df.columns:
+            raise ValueError("Calculate distances from carina first")
+        
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        
+        # 1. Histogram of distal distances
+        valid_distances = self.branch_metrics_df['distance_from_carina_distal_mm'].dropna()
+        axes[0, 0].hist(valid_distances, bins=30, edgecolor='black', alpha=0.7, color='skyblue')
+        axes[0, 0].set_xlabel('Path Distance from Carina (mm)')
+        axes[0, 0].set_ylabel('Number of Branches')
+        axes[0, 0].set_title('Distribution of Branch Distances from Carina')
+        axes[0, 0].grid(True, alpha=0.3)
+        
+        # 2. Distance vs Diameter
+        axes[0, 1].scatter(self.branch_metrics_df['distance_from_carina_distal_mm'],
+                          self.branch_metrics_df['diameter_mean_mm'],
+                          alpha=0.5, s=20)
+        axes[0, 1].set_xlabel('Path Distance from Carina (mm)')
+        axes[0, 1].set_ylabel('Mean Diameter (mm)')
+        axes[0, 1].set_title('Airway Diameter vs Path Distance from Carina')
+        axes[0, 1].grid(True, alpha=0.3)
+        
+        # 3. Distance vs Length
+        axes[1, 0].scatter(self.branch_metrics_df['distance_from_carina_distal_mm'],
+                          self.branch_metrics_df['length_mm'],
+                          alpha=0.5, s=20, color='green')
+        axes[1, 0].set_xlabel('Path Distance from Carina (mm)')
+        axes[1, 0].set_ylabel('Branch Length (mm)')
+        axes[1, 0].set_title('Branch Length vs Path Distance from Carina')
+        axes[1, 0].grid(True, alpha=0.3)
+        
+        # 4. Generation vs Distance (if available)
+        if 'generation' in self.branch_metrics_df.columns:
+            gen_data = self.branch_metrics_df[['generation', 'distance_from_carina_distal_mm']].dropna()
+            axes[1, 1].scatter(gen_data['generation'],
+                             gen_data['distance_from_carina_distal_mm'],
+                             alpha=0.5, s=20, color='coral')
+            axes[1, 1].set_xlabel('Generation')
+            axes[1, 1].set_ylabel('Path Distance from Carina (mm)')
+            axes[1, 1].set_title('Distance vs Generation')
+            axes[1, 1].grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Distance distributions saved: {save_path}")
         
         plt.show()
     
     def visualize_skeleton_3d(self, save_path=None, show_bifurcations=False):
-        """Visualizes 3D skeleton with matplotlib"""
+        """Visualizes 3D skeleton"""
         print("\n=== 3D Visualization ===")
         
         if self.skeleton is None:
             raise ValueError("Compute skeleton first")
         
-        # Find skeleton point coordinates
         skeleton_coords = np.argwhere(self.skeleton > 0)
         
-        # Subsampling for performance (take 1 every N points)
         subsample = max(1, len(skeleton_coords) // 10000)
         skeleton_coords = skeleton_coords[::subsample]
         
         fig = plt.figure(figsize=(12, 10))
         ax = fig.add_subplot(111, projection='3d')
         
-        # Plot skeleton
         ax.scatter(skeleton_coords[:, 2], skeleton_coords[:, 1], skeleton_coords[:, 0],
                   c='blue', marker='.', s=1, alpha=0.6, label='Skeleton')
         
-        # Plot bifurcations only if explicitly requested
         if show_bifurcations and hasattr(self, 'bifurcations_df') and len(self.bifurcations_df) > 0:
             bif = self.bifurcations_df
             ax.scatter(bif['x'], bif['y'], bif['z'],
@@ -773,22 +1195,139 @@ class AirwayGraphAnalyzer:
         
         plt.show()
     
+    def visualize_branches_3d(self, save_path=None, colormap='viridis', max_branches=1000, color_by='diameter'):
+        """Visualizes 3D branches colored by diameter or length"""
+        print("\n=== 3D Branches Visualization ===")
+        
+        if not hasattr(self, 'branch_metrics_df'):
+            raise ValueError("Calculate metrics first")
+        
+        fig = plt.figure(figsize=(14, 10))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        if color_by == 'length':
+            color_values = self.branch_metrics_df['length_mm']
+            color_label = 'Length (mm)'
+        else:
+            color_values = self.branch_metrics_df['diameter_mean_mm']
+            color_label = 'Mean Diameter (mm)'
+        
+        norm = Normalize(vmin=color_values.min(), vmax=color_values.max())
+        cmap = plt.colormaps[colormap]
+        
+        plotted_count = 0
+        for idx, row in self.branch_metrics_df.iterrows():
+            if plotted_count >= max_branches:
+                break
+                
+            branch_id = int(row['branch_id'])
+            color_value = row[color_label.split()[0].lower() + '_mm' if color_by == 'length' else 'diameter_mean_mm']
+            
+            try:
+                coords = self.skeleton_obj.path_coordinates(branch_id)
+                
+                if len(coords) > 1:
+                    z_coords = coords[:, 0]
+                    y_coords = coords[:, 1]
+                    x_coords = coords[:, 2]
+                    
+                    color = cmap(norm(color_value))
+                    
+                    ax.plot(x_coords, y_coords, z_coords, 
+                           color=color, linewidth=2, alpha=0.8)
+                    plotted_count += 1
+                    
+            except Exception as e:
+                continue
+        
+        print(f"Branches plotted: {plotted_count}")
+        
+        sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, shrink=0.8, aspect=20)
+        cbar.set_label(color_label, rotation=270, labelpad=20)
+        
+        ax.set_xlabel('X (voxel)')
+        ax.set_ylabel('Y (voxel)')
+        ax.set_zlabel('Z (voxel)')
+        ax.set_title(f'Bronchial Tree Branches - Colored by {color_label}\n{plotted_count} branches')
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Visualization saved: {save_path}")
+        
+        plt.show()
+    
+    def visualize_connected_components(self, save_path=None, max_components=10, min_voxels=5):
+        """Visualizes connected components"""
+        print("\n=== CONNECTED COMPONENTS VISUALIZATION ===")
+        
+        if self.connected_components is None:
+            raise ValueError("Analyze connected components first")
+        
+        large_components = self.component_stats[self.component_stats['voxel_count'] >= min_voxels]
+        components_to_plot = min(max_components, len(large_components))
+        
+        print(f"Visualizing {components_to_plot} components with at least {min_voxels} voxels")
+        
+        fig = plt.figure(figsize=(16, 12))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        colors = plt.cm.tab20(np.linspace(0, 1, components_to_plot))
+        
+        total_plotted = 0
+        for i in range(components_to_plot):
+            comp_id = large_components.iloc[i]['component_id']
+            voxel_count = large_components.iloc[i]['voxel_count']
+            
+            component_coords = np.argwhere(self.connected_components == comp_id)
+            
+            if len(component_coords) > 0:
+                if voxel_count < 100:
+                    subsample = 1
+                    marker_size = 20
+                else:
+                    subsample = max(1, len(component_coords) // 500)
+                    marker_size = 10
+                
+                component_coords_subsampled = component_coords[::subsample]
+                
+                ax.scatter(component_coords_subsampled[:, 2], 
+                          component_coords_subsampled[:, 1], 
+                          component_coords_subsampled[:, 0],
+                          c=[colors[i]], marker='o', s=marker_size, alpha=0.8,
+                          label=f'Comp {comp_id} ({voxel_count} voxels)')
+                
+                total_plotted += len(component_coords_subsampled)
+        
+        ax.set_xlabel('X (voxel)')
+        ax.set_ylabel('Y (voxel)')
+        ax.set_zlabel('Z (voxel)')
+        ax.set_title(f'Connected Components of Skeleton\n{components_to_plot} components, {total_plotted} points')
+        ax.legend(bbox_to_anchor=(1.15, 1), loc='upper left', fontsize=8)
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Component visualization saved: {save_path}")
+        
+        plt.show()
+    
     def plot_diameter_distribution(self, save_path=None):
         """Plots diameter distribution"""
         if not hasattr(self, 'branch_metrics_df'):
-            print("Calculate metrics first with merge_branch_metrics()")
+            print("Calculate metrics first")
             return
         
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
         
-        # Diameter histogram
         axes[0].hist(self.branch_metrics_df['diameter_mean_mm'], bins=30, edgecolor='black', alpha=0.7)
         axes[0].set_xlabel('Mean diameter (mm)')
         axes[0].set_ylabel('Frequency')
         axes[0].set_title('Branch Diameters Distribution')
         axes[0].grid(True, alpha=0.3)
         
-        # Diameter vs branch length
         axes[1].scatter(self.branch_metrics_df['length_mm'], 
                        self.branch_metrics_df['diameter_mean_mm'], 
                        alpha=0.6, s=20)
@@ -808,19 +1347,17 @@ class AirwayGraphAnalyzer:
     def plot_length_distribution(self, save_path=None):
         """Plots branch length distribution"""
         if not hasattr(self, 'branch_metrics_df'):
-            print("Calculate metrics first with merge_branch_metrics()")
+            print("Calculate metrics first")
             return
         
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
         
-        # Length histogram
         axes[0].hist(self.branch_metrics_df['length_mm'], bins=30, edgecolor='black', alpha=0.7, color='green')
         axes[0].set_xlabel('Branch length (mm)')
         axes[0].set_ylabel('Frequency')
         axes[0].set_title('Branch Length Distribution')
         axes[0].grid(True, alpha=0.3)
         
-        # Length vs Volume
         axes[1].scatter(self.branch_metrics_df['length_mm'], 
                        self.branch_metrics_df['volume_mm3'], 
                        alpha=0.6, s=20, c='green')
@@ -847,10 +1384,11 @@ class AirwayGraphAnalyzer:
         for i, (_, row) in enumerate(summary.iterrows()):
             if i >= 10:
                 break
+            gen_str = f", Gen {int(row['generation'])}" if 'generation' in row and not pd.isna(row['generation']) else ""
             print(f"Branch {row['branch_id']}: "
                   f"Length = {row['length_mm']:.2f} mm, "
                   f"Mean diameter = {row['diameter_mean_mm']:.2f} mm, "
-                  f"Volume = {row['volume_mm3']:.2f} mm³")
+                  f"Volume = {row['volume_mm3']:.2f} mm³{gen_str}")
         
         return summary
     
@@ -873,7 +1411,7 @@ class AirwayGraphAnalyzer:
             sitk.WriteImage(components_sitk, components_path)
             print(f"Connected components saved: {components_path}")
         
-        # Save CSV with complete branch metrics (diameters + lengths)
+        # Save CSV with complete branch metrics
         if hasattr(self, 'branch_metrics_df'):
             metrics_path = os.path.join(output_dir, "branch_metrics_complete.csv")
             self.branch_metrics_df.to_csv(metrics_path, index=False)
@@ -891,6 +1429,17 @@ class AirwayGraphAnalyzer:
             self.component_stats.to_csv(components_path, index=False)
             print(f"Component statistics saved: {components_path}")
         
+        # Save Weibel analysis
+        if hasattr(self, 'weibel_analysis_df'):
+            weibel_path = os.path.join(output_dir, "weibel_generation_analysis.csv")
+            self.weibel_analysis_df.to_csv(weibel_path, index=False)
+            print(f"Weibel generation analysis saved: {weibel_path}")
+        
+        if hasattr(self, 'tapering_ratios_df'):
+            tapering_path = os.path.join(output_dir, "weibel_tapering_ratios.csv")
+            self.tapering_ratios_df.to_csv(tapering_path, index=False)
+            print(f"Tapering ratios saved: {tapering_path}")
+        
         # Save summary
         summary_path = os.path.join(output_dir, "analysis_summary.txt")
         with open(summary_path, 'w') as f:
@@ -904,18 +1453,8 @@ class AirwayGraphAnalyzer:
             
             if hasattr(self, 'component_stats'):
                 f.write("SKELETON CONNECTED COMPONENTS:\n")
-                f.write(f"  Total number of components: {len(self.component_stats)}\n")
-                f.write(f"  Largest component: {self.component_stats['voxel_count'].iloc[0]} voxels "
-                       f"({self.component_stats['volume_mm3'].iloc[0]:.2f} mm³)\n")
-                f.write(f"  Smallest component: {self.component_stats['voxel_count'].iloc[-1]} voxels "
-                       f"({self.component_stats['volume_mm3'].iloc[-1]:.2f} mm³)\n")
-                if hasattr(self, 'skeleton_voxels') and self.skeleton_voxels > 0:
-                    f.write(f"  Percentage of voxels in main component: "
-                           f"{self.component_stats['voxel_count'].iloc[0] / self.skeleton_voxels * 100:.1f}%\n\n")
-                else:
-                    skeleton_voxels_current = np.sum(self.skeleton > 0)
-                    f.write(f"  Percentage of voxels in main component: "
-                           f"{self.component_stats['voxel_count'].iloc[0] / skeleton_voxels_current * 100:.1f}%\n\n")
+                f.write(f"  Total components: {len(self.component_stats)}\n")
+                f.write(f"  Largest component: {self.component_stats['voxel_count'].iloc[0]} voxels\n\n")
             
             if hasattr(self, 'branch_metrics_df'):
                 f.write("BRANCH METRICS:\n")
@@ -924,8 +1463,6 @@ class AirwayGraphAnalyzer:
                 f.write(f"  Min diameter: {self.branch_metrics_df['diameter_mean_mm'].min():.2f} mm\n")
                 f.write(f"  Max diameter: {self.branch_metrics_df['diameter_mean_mm'].max():.2f} mm\n")
                 f.write(f"  Mean length: {self.branch_metrics_df['length_mm'].mean():.2f} mm\n")
-                f.write(f"  Min length: {self.branch_metrics_df['length_mm'].min():.2f} mm\n")
-                f.write(f"  Max length: {self.branch_metrics_df['length_mm'].max():.2f} mm\n")
                 f.write(f"  Total airway length: {self.branch_metrics_df['length_mm'].sum():.2f} mm\n")
                 f.write(f"  Total airway volume: {self.branch_metrics_df['volume_mm3'].sum():.2f} mm³\n\n")
             
@@ -933,7 +1470,16 @@ class AirwayGraphAnalyzer:
                 f.write("BIFURCATIONS:\n")
                 f.write(f"  Number: {len(self.bifurcations_df)}\n")
                 if len(self.bifurcations_df) > 0:
-                    f.write(f"  Average degree: {self.bifurcations_df['degree'].mean():.2f}\n")
+                    f.write(f"  Average degree: {self.bifurcations_df['degree'].mean():.2f}\n\n")
+            
+            if hasattr(self, 'weibel_analysis_df'):
+                f.write("WEIBEL GENERATION ANALYSIS:\n")
+                f.write(f"  Maximum generation: {int(self.weibel_analysis_df['generation'].max())}\n")
+                f.write(f"  Number of generations: {len(self.weibel_analysis_df)}\n")
+                if hasattr(self, 'tapering_ratios_df') and len(self.tapering_ratios_df) > 0:
+                    mean_ratio = self.tapering_ratios_df['diameter_ratio'].mean()
+                    f.write(f"  Mean tapering ratio: {mean_ratio:.3f}\n")
+                    f.write(f"  Weibel theoretical ratio: {2**(-1/3):.3f}\n")
         
         print(f"Summary saved: {summary_path}")
     
@@ -942,30 +1488,20 @@ class AirwayGraphAnalyzer:
                          min_voxels_for_reconnect=5,
                          max_voxels_for_keep=100):
         """
-        Runs complete analysis pipeline with intelligent component management
-        
-        Args:
-            output_dir: Output directory
-            visualize: If True, generates visualizations
-            max_reconnect_distance_mm: Maximum distance to reconnect components (mm)
-            min_voxels_for_reconnect: Minimum voxels to consider a component for reconnection
-            max_voxels_for_keep: Maximum voxels to keep a component isolated
+        Runs complete analysis pipeline with Weibel generation analysis
         """
         print("\n" + "="*60)
         print("COMPLETE BRONCHIAL TREE ANALYSIS PIPELINE")
+        print("WITH WEIBEL GENERATION ANALYSIS")
         print("="*60)
-        print(f"Component management parameters:")
-        print(f"  - Max reconnection distance: {max_reconnect_distance_mm} mm")
-        print(f"  - Min voxels for reconnection: {min_voxels_for_reconnect}")
-        print(f"  - Max voxels to keep isolated: {max_voxels_for_keep}")
         
         # 1. Skeleton
         self.compute_skeleton()
         
-        # 2. Connected components analysis
+        # 2. Connected components
         self.analyze_connected_components()
         
-        # 3. INTELLIGENT COMPONENT MANAGEMENT
+        # 3. Component management
         self.smart_component_management(
             max_reconnect_distance_mm=max_reconnect_distance_mm,
             min_voxels_for_reconnect=min_voxels_for_reconnect,
@@ -973,56 +1509,74 @@ class AirwayGraphAnalyzer:
             remove_tiny_components=True
         )
         
-        # Reanalyze components after management
-        print("\n=== COMPONENT ANALYSIS AFTER MANAGEMENT ===")
+        # Reanalyze after management
         self.analyze_connected_components()
         
-        # 4. Graph
+        # 4. Build graph
         self.build_graph()
         
-        # 5. Lengths
+        # 5. Identify carina
+        self.identify_carina()
+        
+        # 6. Assign Weibel generations
+        self.assign_generations_weibel()
+        
+        # 7. Calculate lengths
         self.calculate_branch_lengths()
         
-        # 6. Diameters
+        # 8. Calculate diameters
         self.analyze_diameters()
         
-        # 7. Merge metrics
+        # 9. Merge metrics
         self.merge_branch_metrics()
         
-        # 8. Bifurcations
+        # 10. Analyze Weibel tapering
+        self.analyze_weibel_tapering()
+        
+        # 11. Calculate path distances from carina
+        self.calculate_distances_from_carina()
+        
+        # 12. Identify bifurcations
         self.identify_bifurcations()
         
-        # 9. Save results
+        # 13. Save results
         self.save_results(output_dir)
         
-        # 10. Visualizations
+        # 14. Visualizations
         if visualize:
-            # Traditional visualization (points)
             self.visualize_skeleton_3d(
                 save_path=os.path.join(output_dir, "skeleton_3d.png"),
                 show_bifurcations=False
             )
             
-            # Connected components visualization
             self.visualize_connected_components(
                 save_path=os.path.join(output_dir, "connected_components.png")
             )
             
-            # Component size distribution visualization
-            self.visualize_component_size_distribution(
-                save_path=os.path.join(output_dir, "component_size_distribution.png")
-            )
-            
-            # Branches/edges visualization - colored by diameter
             self.visualize_branches_3d(
                 save_path=os.path.join(output_dir, "branches_3d_diameter.png"),
                 color_by='diameter'
             )
             
-            # Branches/edges visualization - colored by length
             self.visualize_branches_3d(
                 save_path=os.path.join(output_dir, "branches_3d_length.png"),
                 color_by='length'
+            )
+            
+            self.visualize_weibel_generations(
+                save_path=os.path.join(output_dir, "weibel_generations.png")
+            )
+            
+            self.plot_weibel_tapering_analysis(
+                save_path=os.path.join(output_dir, "weibel_tapering_analysis.png")
+            )
+            
+            self.visualize_distance_from_carina(
+                save_path=os.path.join(output_dir, "distance_from_carina.png")
+            )
+            
+            self.plot_distance_distributions(
+                save_path=os.path.join(output_dir, "distance_distributions.png")
             )
             
             self.plot_diameter_distribution(
@@ -1033,7 +1587,7 @@ class AirwayGraphAnalyzer:
                 save_path=os.path.join(output_dir, "length_distribution.png")
             )
         
-        # 11. Summary
+        # 15. Summary
         self.get_branch_summary()
         
         print("\n" + "="*60)
@@ -1046,5 +1600,7 @@ class AirwayGraphAnalyzer:
             'component_stats': self.component_stats,
             'graph': self.graph,
             'branch_metrics': self.branch_metrics_df,
-            'bifurcations': self.bifurcations_df
+            'bifurcations': self.bifurcations_df,
+            'weibel_analysis': self.weibel_analysis_df,
+            'tapering_ratios': self.tapering_ratios_df
         }

@@ -1,2 +1,0 @@
-component_id,voxel_count,volume_mm3,centroid_z,centroid_y,centroid_x,bbox_min_z,bbox_min_y,bbox_min_x,bbox_max_z,bbox_max_y,bbox_max_x
-1,1086,461.6723448383649,251.37845303867402,153.44935543278083,200.26795580110496,152,94,102,328,204,299
