@@ -1,0 +1,18 @@
+============================================================
+AIRWAY SEGMENTATION PREPROCESSING REPORT
+============================================================
+
+Input file: airway_segmentation/1.2.840.113704.1.111.2604.1126357612.7_airwayfull.nii.gz
+Spacing (x,y,z): (0.7792969942092896, 0.7792969942092896, 0.699999988079071) mm
+Shape (z,y,x): (445, 282, 426)
+
+Original voxels: 100,822
+Cleaned voxels: 101,004
+Removed voxels: -182 (-0.18%)
+
+
+CONNECTED COMPONENTS:
+Total components found: 15
+Largest component: 100,757 voxels
+2nd largest: 14 voxels
+

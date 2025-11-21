@@ -61,6 +61,7 @@ def segment_airwayfull_from_mhd(mhd_path, output_dir, fast=False):
     return airway_dst
 
 
+
 if __name__ == "__main__":
     # <--- modifica qui i path come ti serve
     input_mhd_path = "/content/vesselsegmentation/CARVE14/1.2.840.113704.1.111.2604.1126357612.7.mhd"

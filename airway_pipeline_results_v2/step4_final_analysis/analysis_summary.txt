@@ -1,0 +1,28 @@
+=== BRONCHIAL TREE ANALYSIS ===
+
+Input file: airway_segmentation/1.2.840.113704.1.111.2604.1126357612.7_airwayfull.nii.gz
+Spacing (x,y,z): (0.7792969942092896, 0.7792969942092896, 0.699999988079071) mm
+Shape (z,y,x): (445, 282, 426)
+
+Skeleton voxels: 4741
+
+SKELETON CONNECTED COMPONENTS:
+  Total number of components: 2
+  Largest component: 4734 voxels (2012.48 mm³)
+  Smallest component: 7 voxels (2.98 mm³)
+  Percentage of voxels in main component: 97.8%
+
+BRANCH METRICS:
+  Number of branches: 1790
+  Mean diameter: 3.97 mm
+  Min diameter: 1.40 mm
+  Max diameter: 14.62 mm
+  Mean length: 2.25 mm
+  Min length: 0.70 mm
+  Max length: 66.78 mm
+  Total airway length: 4032.83 mm
+  Total airway volume: 69589.60 mm³
+
+BIFURCATIONS:
+  Number: 856
+  Average degree: 3.12

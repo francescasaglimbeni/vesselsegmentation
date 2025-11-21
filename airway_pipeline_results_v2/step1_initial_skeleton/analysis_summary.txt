@@ -1,0 +1,14 @@
+=== BRONCHIAL TREE ANALYSIS ===
+
+Input file: airway_segmentation/1.2.840.113704.1.111.2604.1126357612.7_airwayfull.nii.gz
+Spacing (x,y,z): (0.7792969942092896, 0.7792969942092896, 0.699999988079071) mm
+Shape (z,y,x): (445, 282, 426)
+
+Skeleton voxels: 4841
+
+SKELETON CONNECTED COMPONENTS:
+  Total number of components: 15
+  Largest component: 4803 voxels (2041.82 mm³)
+  Smallest component: 1 voxels (0.43 mm³)
+  Percentage of voxels in main component: 99.2%
+
