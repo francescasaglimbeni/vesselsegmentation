@@ -12,17 +12,3 @@ SKELETON CONNECTED COMPONENTS:
   Smallest component: 1086 voxels (461.67 mm³)
   Percentage of voxels in main component: 100.0%
 
-BRANCH METRICS:
-  Number of branches: 73
-  Mean diameter: 2.83 mm
-  Min diameter: 1.40 mm
-  Max diameter: 15.33 mm
-  Mean length: 14.72 mm
-  Min length: 2.35 mm
-  Max length: 66.78 mm
-  Total airway length: 1074.80 mm
-  Total airway volume: 15879.63 mm³
-
-BIFURCATIONS:
-  Number: 36
-  Average degree: 3.00

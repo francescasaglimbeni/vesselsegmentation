@@ -3,7 +3,6 @@ import sys
 
 from preprocessin_cleaning import SegmentationPreprocessor
 from airway_graph import AirwayGraphAnalyzer
-from crop_seg import GraphBasedCarinaRemoval
 
 
 def main():
@@ -11,9 +10,8 @@ def main():
     Complete airway analysis pipeline (REVISED ORDER):
     1. Preprocessing and cleaning (remove artifacts, reconnect components)
     2. Skeletonization and initial graph construction
-    3. Graph-based carina detection and trachea removal
-    4. Complete graph analysis on bronchi only (branches, diameters, lengths, bifurcations)
-    5. Final summary
+    3. Complete graph analysis on bronchi only (branches, diameters, lengths, bifurcations)
+    4. Final summary
     """
     
     print("="*80)
@@ -25,7 +23,7 @@ def main():
     # ========================================================================
     
     # Input: Original airway segmentation (trachea + bronchi from TotalSegmentator)
-    original_mask_path = "airway_segmentation/1.2.840.113704.1.111.2604.1126357612.7_airwayfull.nii.gz"
+    original_mask_path = "airway_segmentation/segm_cutted.seg.nrrd"
     
     # Output: Root folder where all results will be saved
     output_root = "airway_pipeline_results_v2"
@@ -124,41 +122,9 @@ def main():
         traceback.print_exc()
         sys.exit(1)
     
-    # ========================================================================
-    # STEP 3: GRAPH-BASED CARINA DETECTION AND TRACHEA REMOVAL
-    # ========================================================================
-    
-    print("\n" + "="*80)
-    print("STEP 3: GRAPH-BASED CARINA DETECTION AND TRACHEA REMOVAL")
-    print("="*80)
-    print("Goal: Use the graph structure to detect the carina (first major")
-    print("      bifurcation) and remove trachea branches, keeping only bronchi")
-    
-    try:
-        carina_remover = GraphBasedCarinaRemoval(analyzer)
-        
-        cropped_skeleton, cropped_mask = carina_remover.run_complete_removal(
-            output_dir=step3_dir,
-            visualize=True
-        )
-        
-        print(f"\n✓ Step 3 completed successfully!")
-        print(f"  Carina detected at node {carina_remover.carina_node}")
-        print(f"  Trachea branches removed: {len(carina_remover.trachea_branches)}")
-        print(f"  Bronchi branches kept: {len(carina_remover.bronchi_branches)}")
-        
-        # Update analyzer with cropped skeleton for final analysis
-        analyzer.skeleton = cropped_skeleton
-        analyzer.mask = cropped_mask
-        
-    except Exception as e:
-        print(f"\n✗ Error in Step 3: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
     
     # ========================================================================
-    # STEP 4: COMPLETE GRAPH ANALYSIS ON BRONCHI ONLY
+    # STEP 3: COMPLETE GRAPH ANALYSIS ON BRONCHI ONLY
     # ========================================================================
     
     print("\n" + "="*80)
@@ -231,7 +197,7 @@ def main():
         sys.exit(1)
     
     # ========================================================================
-    # STEP 5: FINAL SUMMARY
+    # STEP 4: FINAL SUMMARY
     # ========================================================================
     
     print("\n" + "="*80)
@@ -251,14 +217,7 @@ def main():
     print(f"     │   ├── analysis_summary.txt")
     print(f"     │   └── component_statistics.csv")
     print(f"     │")
-    print(f"     ├── step3_carina_removal/")
-    print(f"     │   ├── skeleton_without_trachea.nii.gz")
-    print(f"     │   ├── mask_without_trachea.nii.gz")
-    print(f"     │   ├── branch_classification_trachea_vs_bronchi.csv")
-    print(f"     │   ├── carina_removal_report.txt")
-    print(f"     │   └── visualizations (PNG)")
-    print(f"     │")
-    print(f"     └── step4_final_analysis/")
+    print(f"     └── step3_final_analysis/")
     print(f"         ├── skeleton.nii.gz (bronchi only)")
     print(f"         ├── branch_metrics_complete.csv    ⭐ MAIN OUTPUT")
     print(f"         ├── bifurcations.csv")
@@ -289,15 +248,7 @@ def main():
     if hasattr(analyzer, 'bifurcations_df'):
         print(f"   • Bifurcations detected: {len(analyzer.bifurcations_df)}")
     
-    if hasattr(carina_remover, 'carina_location') and carina_remover.carina_location:
-        print(f"\n🔍 Carina Information:")
-        print(f"   • Position: z={carina_remover.carina_location['z_slice']}, "
-              f"y={carina_remover.carina_location['y_slice']}, "
-              f"x={carina_remover.carina_location['x_slice']}")
-        print(f"   • Physical: {carina_remover.carina_location['z_mm']:.1f} mm")
-        if 'balance_ratio' in carina_remover.carina_location:
-            print(f"   • Left/Right balance ratio: {carina_remover.carina_location['balance_ratio']:.2f}")
-    
+   
     print("\n" + "="*80)
     print("Pipeline execution completed successfully! ✓")
     print("="*80 + "\n")
