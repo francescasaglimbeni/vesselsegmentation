@@ -24,7 +24,7 @@ BIFURCATIONS:
   Average degree: 3.00
 
 WEIBEL GENERATION ANALYSIS:
-  Maximum generation: 8
+  Maximum generation: 7
   Number of generations: 8
-  Mean tapering ratio: 1.362
+  Mean tapering ratio: 0.773
   Weibel theoretical ratio: 0.794

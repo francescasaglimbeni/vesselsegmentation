@@ -432,11 +432,11 @@ class AirwayGraphAnalyzer:
             raise ValueError("Build graph first")
         
         # Initialize generation assignments
-        node_generations = {self.carina_node: 0}
+        node_generations = {self.carina_node: -1}
         branch_generations = {}
         
         # Breadth-first search from carina
-        queue = deque([(self.carina_node, 0)])
+        queue = deque([(self.carina_node, -1)])
         visited = {self.carina_node}
         
         while queue:
@@ -691,8 +691,9 @@ class AirwayGraphAnalyzer:
         for i in range(len(self.weibel_analysis_df) - 1):
             current_gen = self.weibel_analysis_df.iloc[i]
             next_gen = self.weibel_analysis_df.iloc[i + 1]
-            
-            ratio = current_gen['diameter_mean_mm'] / next_gen['diameter_mean_mm']
+            # ERRORE:
+            #ratio = current_gen['diameter_mean_mm'] / next_gen['diameter_mean_mm']
+            ratio = next_gen['diameter_mean_mm'] / current_gen['diameter_mean_mm']
             tapering_ratios.append({
                 'from_generation': int(current_gen['generation']),
                 'to_generation': int(next_gen['generation']),
