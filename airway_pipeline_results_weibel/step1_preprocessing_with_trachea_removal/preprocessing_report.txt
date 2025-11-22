@@ -2,22 +2,22 @@
 AIRWAY SEGMENTATION PREPROCESSING REPORT
 ============================================================
 
-Input file: airway_segmentation/segm_cutted.seg.nrrd
+Input file: final_segmentations/1.2.840.113704.1.111.2604.1126357612.7_bronchi_only_20251122_203842.nii.gz
 Spacing (x,y,z): (0.7792969942092896, 0.7792969942092896, 0.699999988079071) mm
 Shape (z,y,x): (445, 282, 426)
 
-Original voxels: 49,577
-Cleaned voxels: 49,522
-Removed voxels: 55 (0.11%)
+Original voxels: 23,440
+Cleaned voxels: 23,677
+Removed voxels: -237 (-1.01%)
 
 
 CONNECTED COMPONENTS:
-Total components found: 13
-Largest component: 49,521 voxels
-2nd largest: 14 voxels
+Total components found: 3
+Largest component: 23,431 voxels
+2nd largest: 7 voxels
 
 
 CARINA IDENTIFICATION:
-Position (z,y,x): (308.0, 153.0, 197.0)
+Position (z,y,x): (398.0, 125.0, 193.0)
 Trachea removed: Yes
 

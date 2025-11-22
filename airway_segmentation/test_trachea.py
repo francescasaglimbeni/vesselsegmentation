@@ -11,6 +11,7 @@ from skimage.morphology import skeletonize
 from scipy.ndimage import distance_transform_edt
 from skan import Skeleton, summarize
 import os
+import datetime
 
 
 def load_airway_mask(mask_path):
@@ -356,6 +357,33 @@ def save_bronchi_mask(bronchi_mask, sitk_image, output_path):
     return output_path
 
 
+def save_final_segmentation(bronchi_mask, sitk_image, output_dir, input_filename):
+    """Salva la segmentazione finale nella directory specificata"""
+    print(f"\n=== Saving final segmentation ===")
+    
+    # Crea directory se non esiste
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Crea nome file di output
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_name = os.path.splitext(os.path.basename(input_filename))[0]
+    base_name = base_name.replace('.nii', '')  # Rimuovi eventuali estensioni .nii
+    base_name = base_name.replace('_airwayfull', '')  # Rimuovi suffisso airwayfull
+    
+    output_filename = f"{base_name}_bronchi_only_{timestamp}.nii.gz"
+    output_path = os.path.join(output_dir, output_filename)
+    
+    # Salva la segmentazione
+    final_sitk = sitk.GetImageFromArray(bronchi_mask.astype(np.uint8))
+    final_sitk.CopyInformation(sitk_image)
+    sitk.WriteImage(final_sitk, output_path)
+    
+    print(f"  Final segmentation saved: {output_path}")
+    print(f"  File size: {os.path.getsize(output_path) / (1024*1024):.2f} MB")
+    
+    return output_path
+
+
 def main():
     """Main function"""
     print("="*80)
@@ -367,11 +395,13 @@ def main():
     # ========================================================================
     
     # Input file
-    input_mask_path = "airway_segmentation/segm_cutted.seg.nrrd"
+    input_mask_path = "airway_segmentation/1.2.840.113704.1.111.2604.1126357612.7_airwayfull.nii.gz"
     
-    # Output directory
+    # Output directories
     output_dir = "trachea_removal_test"
+    final_segmentation_dir = "final_segmentations"  # Directory per le segmentazioni finali
     os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(final_segmentation_dir, exist_ok=True)
     
     # Margin: numero di slice sotto la carina da rimuovere (0 = taglia esattamente alla carina)
     margin_slices = 0  # Puoi aumentare a 2-3 se vuoi essere più conservativo
@@ -416,11 +446,17 @@ def main():
     bronchi_mask = remove_trachea(mask, carina_z, margin_slices=margin_slices)
     
     # ========================================================================
-    # STEP 6: Save result
+    # STEP 6: Save results
     # ========================================================================
     
-    output_path = os.path.join(output_dir, "bronchi_only_mask.nii.gz")
-    save_bronchi_mask(bronchi_mask, sitk_image, output_path)
+    # Salva nella directory di test
+    test_output_path = os.path.join(output_dir, "bronchi_only_mask.nii.gz")
+    save_bronchi_mask(bronchi_mask, sitk_image, test_output_path)
+    
+    # Salva la segmentazione finale nella directory dedicata
+    final_output_path = save_final_segmentation(
+        bronchi_mask, sitk_image, final_segmentation_dir, input_mask_path
+    )
     
     # ========================================================================
     # STEP 7: Visualizations
@@ -445,9 +481,10 @@ def main():
     print("="*80)
     print(f"\n✓ Trachea successfully removed!")
     print(f"\nOutput files:")
-    print(f"  • {output_path}")
-    print(f"  • {output_dir}/comparison_3d.png")
-    print(f"  • {output_dir}/axial_slices.png")
+    print(f"  • Test output: {test_output_path}")
+    print(f"  • Final segmentation: {final_output_path}")
+    print(f"  • Visualizations: {output_dir}/comparison_3d.png")
+    print(f"  • Visualizations: {output_dir}/axial_slices.png")
     print(f"\nCarina location: z={carina_z}, y={carina_y}, x={carina_x}")
     print(f"Voxels removed: {np.sum((mask > 0) & (bronchi_mask == 0)):,}")
     print(f"Voxels remaining: {np.sum(bronchi_mask > 0):,}")

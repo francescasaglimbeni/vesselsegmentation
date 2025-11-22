@@ -1016,10 +1016,11 @@ class AirwayGraphAnalyzer:
         ax3.set_xticks(generations)
         ax3.grid(True, alpha=0.3, axis='y')
         
-        # Add theoretical line (2^generation for perfect dichotomous branching)
-        theoretical_branches = [2**g for g in generations]
+        # Add theoretical line (2^(generation+1) for perfect dichotomous branching)
+        # Generation 0 = 2 main bronchi, then each bifurcates at next generation
+        theoretical_branches = [2**(g+1) for g in generations]
         ax3.plot(generations, theoretical_branches, 
-                'r--', linewidth=2, alpha=0.7, label='Perfect dichotomy (2^n)')
+                'r--', linewidth=2, alpha=0.7, label='Perfect dichotomy (2^(n+1))')
         ax3.legend()
         
         # 4. Mean branch length by generation
