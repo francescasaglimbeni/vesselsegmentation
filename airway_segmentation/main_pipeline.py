@@ -69,7 +69,6 @@ def main():
             try_reconnection=True,          # Attempt to reconnect nearby components
             max_reconnect_distance_mm=15.0, # Maximum PATH distance for reconnection (mm)
             min_component_size=50,          # Minimum size to consider for reconnection
-            remove_trachea=True,            # ✓ NEW: Remove trachea, keep bronchi only
             visualize=True
         )
         

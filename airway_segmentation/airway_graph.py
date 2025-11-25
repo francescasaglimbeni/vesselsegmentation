@@ -691,8 +691,6 @@ class AirwayGraphAnalyzer:
         for i in range(len(self.weibel_analysis_df) - 1):
             current_gen = self.weibel_analysis_df.iloc[i]
             next_gen = self.weibel_analysis_df.iloc[i + 1]
-            # ERRORE:
-            #ratio = current_gen['diameter_mean_mm'] / next_gen['diameter_mean_mm']
             ratio = next_gen['diameter_mean_mm'] / current_gen['diameter_mean_mm']
             tapering_ratios.append({
                 'from_generation': int(current_gen['generation']),
@@ -890,6 +888,224 @@ class AirwayGraphAnalyzer:
         
         return self.bifurcations_df
     
+    def visualize_graph_with_generations(self, save_path=None, max_generation=None, 
+                                       show_node_labels=True, show_branch_labels=True,
+                                       node_size=50, font_size=8, figsize=(16, 12)):
+        """
+        Visualizza il grafo 3D con etichette delle generazioni
+        
+        Args:
+            save_path: Percorso per salvare l'immagine
+            max_generation: Generazione massima da visualizzare
+            show_node_labels: Mostra le etichette sui nodi
+            show_branch_labels: Mostra le etichette sui rami
+            node_size: Dimensione dei nodi
+            font_size: Dimensione del font
+        """
+        print("\n=== 3D GRAPH WITH GENERATION LABELS ===")
+        
+        if self.graph is None:
+            raise ValueError("Build graph first with build_graph()")
+        
+        if self.generation_assignments is None:
+            raise ValueError("Assign generations first with assign_generations_weibel()")
+        
+        fig = plt.figure(figsize=figsize)
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Filtra per generazione massima se specificata
+        if max_generation is not None:
+            nodes_to_plot = [node for node in self.graph.nodes() 
+                           if self.generation_assignments['nodes'].get(node, np.nan) <= max_generation]
+        else:
+            nodes_to_plot = list(self.graph.nodes())
+        
+        # Prepara i colori per le generazioni
+        generations = [self.generation_assignments['nodes'].get(node, -1) for node in nodes_to_plot]
+        unique_gens = sorted(set(generations))
+        colors = plt.cm.tab20(np.linspace(0, 1, len(unique_gens)))
+        gen_to_color = {gen: colors[i] for i, gen in enumerate(unique_gens)}
+        
+        # Plot dei nodi
+        for node in nodes_to_plot:
+            pos = self.graph.nodes[node]['pos']
+            gen = self.generation_assignments['nodes'].get(node, -1)
+            color = gen_to_color[gen]
+            
+            # Dimensione del nodo basata sul grado
+            degree = self.graph.degree(node)
+            size = node_size * (1 + degree * 0.2)  # Nodi con più connessioni sono più grandi
+            
+            ax.scatter(pos[2], pos[1], pos[0], 
+                      c=[color], s=size, alpha=0.8, edgecolors='black', linewidths=0.5)
+            
+            # Etichetta del nodo (generazione)
+            if show_node_labels:
+                ax.text(pos[2], pos[1], pos[0], f'{gen}', 
+                       fontsize=font_size, ha='center', va='center',
+                       bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.7))
+        
+        # Plot degli archi (rami)
+        for edge in self.graph.edges():
+            node1, node2 = edge
+            if node1 in nodes_to_plot and node2 in nodes_to_plot:
+                pos1 = self.graph.nodes[node1]['pos']
+                pos2 = self.graph.nodes[node2]['pos']
+                
+                # Colore basato sulla generazione media
+                gen1 = self.generation_assignments['nodes'].get(node1, -1)
+                gen2 = self.generation_assignments['nodes'].get(node2, -1)
+                avg_gen = (gen1 + gen2) / 2
+                
+                # Trova il colore più vicino
+                closest_gen = min(unique_gens, key=lambda x: abs(x - avg_gen))
+                color = gen_to_color[closest_gen]
+                
+                ax.plot([pos1[2], pos2[2]], [pos1[1], pos2[1]], [pos1[0], pos2[0]],
+                       color=color, linewidth=2, alpha=0.7)
+                
+                # Etichetta del ramo (generazione)
+                if show_branch_labels:
+                    mid_point = [(pos1[0] + pos2[0])/2, 
+                                (pos1[1] + pos2[1])/2, 
+                                (pos1[2] + pos2[2])/2]
+                    branch_gen = self.generation_assignments['branches'].get(tuple(sorted(edge)), np.nan)
+                    if not np.isnan(branch_gen):
+                        ax.text(mid_point[2], mid_point[1], mid_point[0], f'G{branch_gen}',
+                               fontsize=font_size-1, ha='center', va='center',
+                               bbox=dict(boxstyle="round,pad=0.1", facecolor='yellow', alpha=0.7))
+        
+        # Legenda delle generazioni
+        legend_elements = [plt.Line2D([0], [0], marker='o', color='w', 
+                                     markerfacecolor=gen_to_color[gen], markersize=8,
+                                     label=f'Gen {gen}')
+                          for gen in unique_gens]
+        ax.legend(handles=legend_elements, bbox_to_anchor=(1.15, 1), 
+                 loc='upper left', fontsize=9, title="Generations")
+        
+        ax.set_xlabel('X (voxel)')
+        ax.set_ylabel('Y (voxel)')
+        ax.set_zlabel('Z (voxel)')
+        
+        title = f'Bronchial Tree - Graph with Generation Labels\n{len(nodes_to_plot)} nodes, {len(unique_gens)} generations'
+        if max_generation is not None:
+            title += f' (up to Gen {max_generation})'
+        ax.set_title(title)
+        
+        # Migliora la visualizzazione 3D
+        ax.grid(True, alpha=0.3)
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Graph with generations saved: {save_path}")
+        
+        plt.show()
+        
+        return fig, ax
+
+    def visualize_weibel_generations_enhanced(self, save_path=None, max_generation=None, 
+                                            show_labels=True, label_frequency=0.3):
+        """
+        Visualizzazione migliorata delle generazioni di Weibel con etichette
+        
+        Args:
+            save_path: Percorso per salvare l'immagine
+            max_generation: Generazione massima da visualizzare
+            show_labels: Mostra le etichette delle generazioni
+            label_frequency: Frequenza delle etichette (0-1, più alto = più etichette)
+        """
+        print("\n=== ENHANCED WEIBEL GENERATION VISUALIZATION ===")
+        
+        if 'generation' not in self.branch_metrics_df.columns:
+            raise ValueError("Assign generations first with assign_generations_weibel()")
+        
+        fig = plt.figure(figsize=(16, 12))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Filtra per generazione massima se specificata
+        if max_generation is not None:
+            plot_data = self.branch_metrics_df[self.branch_metrics_df['generation'] <= max_generation]
+        else:
+            plot_data = self.branch_metrics_df
+        
+        # Usa colormap discreta per le generazioni
+        max_gen = int(plot_data['generation'].max())
+        colors = plt.cm.tab20(np.linspace(0, 1, max_gen + 1))
+        
+        plotted_count = 0
+        labeled_branches = set()
+        
+        for idx, row in plot_data.iterrows():
+            if pd.isna(row['generation']):
+                continue
+            
+            branch_id = int(row['branch_id'])
+            generation = int(row['generation'])
+            
+            try:
+                coords = self.skeleton_obj.path_coordinates(branch_id)
+                
+                if len(coords) > 1:
+                    z_coords = coords[:, 0]
+                    y_coords = coords[:, 1]
+                    x_coords = coords[:, 2]
+                    
+                    color = colors[generation % len(colors)]
+                    
+                    # Plot del ramo
+                    line = ax.plot(x_coords, y_coords, z_coords, 
+                                  color=color, linewidth=2, alpha=0.8,
+                                  label=f'Gen {generation}' if generation not in labeled_branches else "")
+                    
+                    if generation not in labeled_branches:
+                        labeled_branches.add(generation)
+                    
+                    plotted_count += 1
+                    
+                    # Aggiungi etichetta della generazione (sul punto medio)
+                    if show_labels and np.random.random() < label_frequency:
+                        mid_idx = len(coords) // 2
+                        if mid_idx < len(coords):
+                            mid_point = coords[mid_idx]
+                            ax.text(mid_point[2], mid_point[1], mid_point[0], 
+                                   f'G{generation}', fontsize=8, ha='center', va='center',
+                                   bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8))
+                    
+            except Exception as e:
+                continue
+        
+        print(f"Branches plotted: {plotted_count}")
+        
+        # Crea legenda
+        legend_elements = []
+        for gen in sorted(labeled_branches):
+            color = colors[gen % len(colors)]
+            legend_elements.append(plt.Line2D([0], [0], color=color, linewidth=2, 
+                                            label=f'Generation {gen}'))
+        
+        ax.legend(handles=legend_elements, bbox_to_anchor=(1.15, 1), 
+                 loc='upper left', fontsize=9, title="Weibel Generations")
+        
+        ax.set_xlabel('X (voxel)')
+        ax.set_ylabel('Y (voxel)')
+        ax.set_zlabel('Z (voxel)')
+        
+        title = f'Bronchial Tree - Weibel Generations\n{plotted_count} branches, {len(labeled_branches)} generations'
+        if max_generation is not None:
+            title += f' (up to Gen {max_generation})'
+        ax.set_title(title)
+        
+        # Migliora la visualizzazione
+        ax.grid(True, alpha=0.3)
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Enhanced Weibel visualization saved: {save_path}")
+        
+        plt.show()
+        
+        return fig, ax
+
     def visualize_weibel_generations(self, save_path=None, max_generation=None):
         """
         Visualizes branches colored by Weibel generation
@@ -1563,6 +1779,18 @@ class AirwayGraphAnalyzer:
             self.visualize_branches_3d(
                 save_path=os.path.join(output_dir, "branches_3d_length.png"),
                 color_by='length'
+            )
+            
+            # NUOVE VISUALIZZAZIONI CON ETICHETTE
+            self.visualize_graph_with_generations(
+                save_path=os.path.join(output_dir, "graph_with_generations.png"),
+                show_node_labels=True,
+                show_branch_labels=True
+            )
+            
+            self.visualize_weibel_generations_enhanced(
+                save_path=os.path.join(output_dir, "weibel_generations_enhanced.png"),
+                show_labels=True
             )
             
             self.visualize_weibel_generations(

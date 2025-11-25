@@ -17,7 +17,6 @@ class SegmentationPreprocessor:
     - Analyzes connected components
     - Keeps only the largest component (main airway tree)
     - Attempts to reconnect nearby disconnected components (PATH-BASED distances)
-    - Identifies and removes trachea (keeps from carina onwards)
     - Cleans small isolated artifacts
     """
     
@@ -46,11 +45,9 @@ class SegmentationPreprocessor:
         self.component_stats = None
         self.reconnection_info = []
         
-        # Skeleton and graph for trachea removal
+        # Skeleton and graph for analysis
         self.preliminary_skeleton = None
         self.preliminary_graph = None
-        self.carina_location = None
-        self.trachea_removed = False
         
     def analyze_components(self):
         """Analyzes connected components in the original segmentation"""
@@ -177,8 +174,7 @@ class SegmentationPreprocessor:
     def compute_preliminary_skeleton_and_graph(self):
         """
         Computes a preliminary skeleton and graph for:
-        1. Identifying the carina
-        2. Calculating path-based distances for reconnection
+        - Calculating path-based distances for reconnection
         """
         print(f"\n{'='*60}")
         print("COMPUTING PRELIMINARY SKELETON FOR ANALYSIS")
@@ -254,102 +250,6 @@ class SegmentationPreprocessor:
               f"{len(self.preliminary_graph.edges())} edges")
         
         return self.preliminary_skeleton, self.preliminary_graph
-    
-    def identify_and_remove_trachea(self):
-        """
-        Identifies the carina (bifurcation with largest diameter) and removes
-        all airway tissue proximal to it (trachea)
-        """
-        print(f"\n{'='*60}")
-        print("IDENTIFYING AND REMOVING TRACHEA")
-        print(f"{'='*60}")
-        
-        if self.preliminary_graph is None:
-            raise ValueError("Run compute_preliminary_skeleton_and_graph() first")
-        
-        # Find bifurcations (nodes with degree >= 3)
-        bifurcations = [node for node in self.preliminary_graph.nodes() 
-                       if self.preliminary_graph.degree(node) >= 3]
-        
-        print(f"Found {len(bifurcations)} bifurcation points")
-        
-        if len(bifurcations) == 0:
-            print("WARNING: No bifurcations found! Cannot identify carina.")
-            print("Proceeding without trachea removal.")
-            self.trachea_removed = False
-            return self.cleaned_mask
-        
-        # Calculate average diameter near each bifurcation
-        bifurcation_info = []
-        for bif_node in bifurcations:
-            pos = self.preliminary_graph.nodes[bif_node]['pos']
-            
-            # Get diameters of connected edges
-            connected_edges = self.preliminary_graph.edges(bif_node)
-            edge_diameters = []
-            for edge in connected_edges:
-                edge_data = self.preliminary_graph.get_edge_data(*edge)
-                if 'diameter' in edge_data:
-                    edge_diameters.append(edge_data['diameter'])
-            
-            avg_diameter = np.mean(edge_diameters) if edge_diameters else 0
-            max_diameter = np.max(edge_diameters) if edge_diameters else 0
-            
-            bifurcation_info.append({
-                'node': bif_node,
-                'position': pos,
-                'avg_diameter': avg_diameter,
-                'max_diameter': max_diameter,
-                'degree': self.preliminary_graph.degree(bif_node)
-            })
-        
-        # Sort by average diameter (descending)
-        bifurcation_info.sort(key=lambda x: x['avg_diameter'], reverse=True)
-        
-        # The carina is the bifurcation with the largest diameter
-        carina_info = bifurcation_info[0]
-        self.carina_location = carina_info['position']
-        carina_node = carina_info['node']
-        
-        print(f"\nIdentified CARINA:")
-        print(f"  Node ID: {carina_node}")
-        print(f"  Position (z,y,x): ({self.carina_location[0]:.1f}, "
-              f"{self.carina_location[1]:.1f}, {self.carina_location[2]:.1f})")
-        print(f"  Average diameter: {carina_info['avg_diameter']:.2f} mm")
-        print(f"  Max diameter: {carina_info['max_diameter']:.2f} mm")
-        print(f"  Degree: {carina_info['degree']}")
-        
-        # Show top 5 bifurcations for comparison
-        print(f"\nTop 5 bifurcations by diameter:")
-        for i, bif in enumerate(bifurcation_info[:5]):
-            marker = " ← CARINA" if i == 0 else ""
-            print(f"  {i+1}. Node {bif['node']}: "
-                  f"avg_diameter={bif['avg_diameter']:.2f} mm, "
-                  f"degree={bif['degree']}{marker}")
-        
-        # Remove trachea: keep only voxels at or below carina's z-coordinate
-        # (assuming z increases from superior to inferior)
-        carina_z = int(self.carina_location[0])
-        
-        print(f"\nRemoving trachea (all tissue above z={carina_z})...")
-        
-        # Create mask for bronchi only (from carina onwards)
-        bronchi_mask = self.cleaned_mask.copy()
-        bronchi_mask[:carina_z, :, :] = 0  # Remove everything above carina
-        
-        original_voxels = np.sum(self.cleaned_mask > 0)
-        bronchi_voxels = np.sum(bronchi_mask > 0)
-        removed_voxels = original_voxels - bronchi_voxels
-        
-        print(f"Original voxels (trachea + bronchi): {original_voxels:,}")
-        print(f"Remaining voxels (bronchi only): {bronchi_voxels:,}")
-        print(f"Removed voxels (trachea): {removed_voxels:,} "
-              f"({removed_voxels/original_voxels*100:.1f}%)")
-        
-        self.cleaned_mask = bronchi_mask
-        self.trachea_removed = True
-        
-        return self.cleaned_mask
     
     def calculate_path_distance(self, component_coords, main_component_coords):
         """
@@ -663,18 +563,10 @@ class SegmentationPreprocessor:
                       c=[colors[i]], s=10, alpha=0.6,
                       label=f'Comp {comp_id} ({comp_size:,} vox)')
         
-        # Mark carina if identified
-        if self.carina_location is not None:
-            ax.scatter([self.carina_location[2]], [self.carina_location[1]], [self.carina_location[0]],
-                      c='red', s=200, marker='*', edgecolors='black', linewidths=2,
-                      label='CARINA', zorder=10)
-        
         ax.set_xlabel('X (voxel)')
         ax.set_ylabel('Y (voxel)')
         ax.set_zlabel('Z (voxel)')
         title = f'Connected Components Analysis\n{len(self.component_stats)} total components'
-        if self.trachea_removed:
-            title += ' (Trachea removed)'
         ax.set_title(title)
         ax.legend(bbox_to_anchor=(1.15, 1), loc='upper left', fontsize=9)
         
@@ -713,21 +605,11 @@ class SegmentationPreprocessor:
         ax2.scatter(cleaned_coords[:, 2], cleaned_coords[:, 1], cleaned_coords[:, 0],
                    c='green', s=1, alpha=0.5)
         
-        # Mark carina
-        if self.carina_location is not None:
-            ax2.scatter([self.carina_location[2]], [self.carina_location[1]], [self.carina_location[0]],
-                       c='red', s=100, marker='*', edgecolors='black', linewidths=1.5,
-                       label='Carina', zorder=10)
-        
         title = f'Cleaned\n({np.sum(self.cleaned_mask > 0):,} voxels)'
-        if self.trachea_removed:
-            title += '\n(Trachea removed)'
         ax2.set_title(title)
         ax2.set_xlabel('X')
         ax2.set_ylabel('Y')
         ax2.set_zlabel('Z')
-        if self.carina_location is not None:
-            ax2.legend()
         
         # Difference
         ax3 = fig.add_subplot(133, projection='3d')
@@ -795,12 +677,6 @@ class SegmentationPreprocessor:
                     f.write(f"2nd largest: {self.component_stats['voxel_count'].iloc[1]:,} voxels\n")
                 f.write("\n")
             
-            if self.carina_location is not None:
-                f.write("\nCARINA IDENTIFICATION:\n")
-                f.write(f"Position (z,y,x): ({self.carina_location[0]:.1f}, "
-                       f"{self.carina_location[1]:.1f}, {self.carina_location[2]:.1f})\n")
-                f.write(f"Trachea removed: {'Yes' if self.trachea_removed else 'No'}\n\n")
-            
             if self.reconnection_info:
                 f.write("\nRECONNECTION ATTEMPTS:\n")
                 for info in self.reconnection_info:
@@ -821,22 +697,21 @@ class SegmentationPreprocessor:
                               try_reconnection=True,
                               max_reconnect_distance_mm=10.0,
                               min_component_size=50,
-                              remove_trachea=True,
                               visualize=True):
         """
-        Runs complete preprocessing pipeline with trachea removal
+        Runs complete preprocessing pipeline WITHOUT trachea removal
         
         Args:
             output_dir: Output directory
             try_reconnection: Whether to attempt reconnecting components
             max_reconnect_distance_mm: Max distance for reconnection
             min_component_size: Min size for reconnection attempt
-            remove_trachea: Whether to identify and remove trachea
             visualize: Generate visualizations
         """
         print("\n" + "="*60)
         print("AIRWAY SEGMENTATION PREPROCESSING PIPELINE")
         print("="*60)
+        print("NOTE: Trachea removal has been disabled")
         
         os.makedirs(output_dir, exist_ok=True)
         
@@ -846,25 +721,11 @@ class SegmentationPreprocessor:
         # 2. Keep largest component
         self.keep_largest_component()
         
-        # 3. Compute preliminary skeleton (for trachea removal and path distances)
-        if remove_trachea or try_reconnection:
+        # 3. Compute preliminary skeleton (for path distances)
+        if try_reconnection:
             self.compute_preliminary_skeleton_and_graph()
         
-        # 4. Remove trachea (if requested)
-        if remove_trachea:
-            self.identify_and_remove_trachea()
-            
-            # Re-analyze components after trachea removal
-            print("\nRe-analyzing components after trachea removal...")
-            self.analyze_components()
-            self.keep_largest_component()
-            
-            # Recompute skeleton on bronchi-only mask
-            if try_reconnection:
-                print("\nRecomputing skeleton on bronchi-only mask...")
-                self.compute_preliminary_skeleton_and_graph()
-        
-        # 5. Reconnection (path-based if skeleton available)
+        # 4. Reconnection (path-based if skeleton available)
         if try_reconnection and len(self.component_stats) > 1:
             self.reconnect_nearby_components(
                 max_distance_mm=max_reconnect_distance_mm,
@@ -872,19 +733,19 @@ class SegmentationPreprocessor:
                 use_path_distance=True  # Use path-based distances
             )
         
-        # 6. Morphological cleanup
+        # 5. Morphological cleanup
         self.morphological_cleanup(
             remove_small_holes=True,
             hole_size_mm3=50,
             smooth_surface=False
         )
         
-        # 7. Save results
-        cleaned_path = os.path.join(output_dir, "cleaned_airway_mask_bronchi_only.nii.gz")
+        # 6. Save results
+        cleaned_path = os.path.join(output_dir, "cleaned_airway_mask_complete.nii.gz")
         self.save_cleaned_mask(cleaned_path)
         self.save_report(output_dir)
         
-        # 8. Visualizations
+        # 7. Visualizations
         if visualize:
             self.visualize_components_3d(
                 save_path=os.path.join(output_dir, "components_3d.png")
@@ -897,8 +758,7 @@ class SegmentationPreprocessor:
         print("PREPROCESSING COMPLETED!")
         print("="*60)
         print(f"\nCleaned mask ready: {cleaned_path}")
-        if self.trachea_removed:
-            print("✓ Trachea removed - mask contains BRONCHI ONLY (from carina)")
-        print("You can now use this for detailed bronchial tree analysis")
+        print("✓ Complete airway tree preserved (trachea + bronchi)")
+        print("You can now use this for detailed airway tree analysis")
         
         return self.cleaned_mask, cleaned_path
