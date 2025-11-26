@@ -654,7 +654,8 @@ class SegmentationPreprocessor:
         
         report_path = os.path.join(output_dir, "preprocessing_report.txt")
         
-        with open(report_path, 'w') as f:
+        # Open the report with UTF-8 encoding to support special characters (✓, ✗, etc.)
+        with open(report_path, 'w', encoding='utf-8') as f:
             f.write("="*60 + "\n")
             f.write("AIRWAY SEGMENTATION PREPROCESSING REPORT\n")
             f.write("="*60 + "\n\n")

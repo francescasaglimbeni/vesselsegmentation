@@ -359,32 +359,33 @@ class AirwayGraphAnalyzer:
     
     def identify_carina(self):
         """
-        Identifies the carina as the root node of the bronchial tree.
-        The carina is typically the node with the highest degree (usually 2-3)
-        and largest associated diameters.
+        Identifica la carina come il nodo con il diametro medio più grande tra i punti di biforcazione
+        Restituisce anche le coordinate della carina
         """
-        print("\n=== CARINA IDENTIFICATION ===")
+        print("\n=== CARINA IDENTIFICATION BY DIAMETER ===")
         
         if self.graph is None:
             raise ValueError("Build graph first with build_graph()")
         
-        # Find nodes with degree >= 2 (potential bifurcations)
+        # Trova nodi con grado >= 2 (potenziali biforcazioni)
         candidate_nodes = [node for node in self.graph.nodes() 
-                          if self.graph.degree(node) >= 2]
+                        if self.graph.degree(node) >= 2]
         
         if len(candidate_nodes) == 0:
             print("WARNING: No bifurcation nodes found!")
-            # Fallback: use node with highest degree
+            # Fallback: usa il nodo con grado più alto
             degrees = dict(self.graph.degree())
             self.carina_node = max(degrees, key=degrees.get)
+            carina_diameter = 0
+            carina_position = self.graph.nodes[self.carina_node]['pos']
         else:
-            # Calculate average diameter for edges connected to each candidate
+            # Calcola diametro medio per ogni candidato
             node_info = []
             for node in candidate_nodes:
                 pos = self.graph.nodes[node]['pos']
                 z, y, x = int(pos[0]), int(pos[1]), int(pos[2])
                 
-                # Get diameter at node position
+                # Ottieni diametro alla posizione del nodo
                 if (0 <= z < self.distance_transform.shape[0] and
                     0 <= y < self.distance_transform.shape[1] and
                     0 <= x < self.distance_transform.shape[2]):
@@ -392,26 +393,117 @@ class AirwayGraphAnalyzer:
                 else:
                     diameter = 0
                 
+                # Calcola diametro medio dei rami connessi
+                connected_branches = []
+                for neighbor in self.graph.neighbors(node):
+                    edge = tuple(sorted([node, neighbor]))
+                    if 'diameter' in self.graph.edges[edge]:
+                        connected_branches.append(self.graph.edges[edge]['diameter'])
+                
+                avg_branch_diameter = np.mean(connected_branches) if connected_branches else diameter
+                
                 node_info.append({
                     'node': node,
                     'degree': self.graph.degree(node),
-                    'diameter': diameter,
-                    'z': z
+                    'diameter_at_node': diameter,
+                    'avg_branch_diameter': avg_branch_diameter,
+                    'z': z,
+                    'y': y,
+                    'x': x,
+                    'position': pos
                 })
             
-            # Sort by diameter (descending) then by z-coordinate (ascending - superior)
-            node_info.sort(key=lambda x: (-x['diameter'], x['z']))
+            # Ordina per diametro medio (discendente) poi per coordinata z (ascendente - superiore)
+            node_info.sort(key=lambda x: (-x['avg_branch_diameter'], x['z']))
             
             self.carina_node = node_info[0]['node']
+            carina_diameter = node_info[0]['avg_branch_diameter']
+            carina_position = node_info[0]['position']
             
             print(f"Carina identified: Node {self.carina_node}")
             print(f"  Degree: {node_info[0]['degree']}")
-            print(f"  Diameter: {node_info[0]['diameter']:.2f} mm")
-            print(f"  Position (z,y,x): ({node_info[0]['z']}, "
-                  f"{self.graph.nodes[self.carina_node]['pos'][1]:.1f}, "
-                  f"{self.graph.nodes[self.carina_node]['pos'][2]:.1f})")
+            print(f"  Average branch diameter: {node_info[0]['avg_branch_diameter']:.2f} mm")
+            print(f"  Diameter at node: {node_info[0]['diameter_at_node']:.2f} mm")
+            print(f"  Position (z,y,x): ({node_info[0]['z']}, {node_info[0]['y']:.1f}, {node_info[0]['x']:.1f})")
+            print(f"  Position (world coordinates): ({carina_position[2]:.1f}, {carina_position[1]:.1f}, {carina_position[0]:.1f})")
         
-        return self.carina_node
+        # Salva informazioni dettagliate sulla carina
+        self.carina_info = {
+            'node_id': self.carina_node,
+            'position': carina_position,
+            'avg_branch_diameter': carina_diameter,
+            'diameter_at_node': node_info[0]['diameter_at_node'] if len(candidate_nodes) > 0 else 0,
+            'degree': node_info[0]['degree'] if len(candidate_nodes) > 0 else self.graph.degree(self.carina_node),
+            'coordinates_voxel': (node_info[0]['z'], node_info[0]['y'], node_info[0]['x']) if len(candidate_nodes) > 0 else (int(carina_position[0]), int(carina_position[1]), int(carina_position[2])),
+            'coordinates_world': (carina_position[2], carina_position[1], carina_position[0])  # x, y, z
+        }
+
+        return self.carina_node, carina_diameter, carina_position
+    
+    def visualize_with_carina(self, save_path=None, figsize=(16, 12)):
+        """
+        Visualizzazione del grafo con la carina evidenziata con un PUNTINO ROSSO
+        """
+        print("\n=== GRAPH VISUALIZATION WITH CARINA ===")
+        
+        if self.graph is None:
+            raise ValueError("Build graph first with build_graph()")
+        
+        if not hasattr(self, 'carina_node'):
+            self.identify_carina()
+        
+        fig = plt.figure(figsize=figsize)
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Plot tutti i nodi
+        all_nodes = list(self.graph.nodes())
+        node_positions = np.array([self.graph.nodes[node]['pos'] for node in all_nodes])
+        
+        # Colora i nodi per grado
+        node_degrees = [self.graph.degree(node) for node in all_nodes]
+        node_colors = plt.cm.viridis(np.array(node_degrees) / max(node_degrees))
+        
+        ax.scatter(node_positions[:, 2], node_positions[:, 1], node_positions[:, 0],
+                c=node_colors, s=50, alpha=0.7, edgecolors='black', linewidths=0.5)
+        
+        # Plot archi
+        for edge in self.graph.edges():
+            pos1 = self.graph.nodes[edge[0]]['pos']
+            pos2 = self.graph.nodes[edge[1]]['pos']
+            ax.plot([pos1[2], pos2[2]], [pos1[1], pos2[1]], [pos1[0], pos2[0]],
+                color='gray', linewidth=1, alpha=0.5)
+        
+        # Evidenzia la CARINA con un PUNTINO ROSSO (anziché stella)
+        carina_pos = self.graph.nodes[self.carina_node]['pos']
+        ax.scatter(carina_pos[2], carina_pos[1], carina_pos[0],
+                c='red', s=200, marker='o', edgecolors='black', linewidths=2,
+                label=f'Carina (Ø={self.carina_info["avg_branch_diameter"]:.1f}mm)')
+        
+        # Aggiungi etichetta alla carina con coordinate
+        coord_text = f'CARINA\nX:{carina_pos[2]:.1f}\nY:{carina_pos[1]:.1f}\nZ:{carina_pos[0]:.1f}'
+        ax.text(carina_pos[2], carina_pos[1], carina_pos[0] + 10, 
+            coord_text, fontsize=10, fontweight='bold', color='red', ha='center',
+            bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.8))
+        
+        ax.set_xlabel('X (voxel)')
+        ax.set_ylabel('Y (voxel)')
+        ax.set_zlabel('Z (voxel)')
+        ax.set_title('Bronchial Tree Graph with Carina Highlighted\n(Red dot = Carina, largest diameter bifurcation)')
+        ax.legend()
+        
+        # Aggiungi colorbar per i gradi
+        sm = plt.cm.ScalarMappable(cmap=plt.cm.viridis, 
+                                norm=plt.Normalize(vmin=min(node_degrees), vmax=max(node_degrees)))
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, shrink=0.8, aspect=20)
+        cbar.set_label('Node Degree', rotation=270, labelpad=20)
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Graph with carina saved: {save_path}")
+        
+        plt.show()
+        return fig, ax
     
     def assign_generations_weibel(self):
         """
@@ -426,7 +518,7 @@ class AirwayGraphAnalyzer:
         print("\n=== WEIBEL GENERATION ASSIGNMENT ===")
         
         if self.carina_node is None:
-            self.identify_carina()
+            self.identify_carina_with_diameter()
         
         if self.graph is None:
             raise ValueError("Build graph first")
@@ -1173,6 +1265,206 @@ class AirwayGraphAnalyzer:
         
         plt.show()
     
+    def visualize_weibel_generations_with_carina(self, save_path=None, max_generation=None):
+        """
+        Visualizza le generazioni di Weibel con la carina evidenziata con PUNTINO
+        """
+        print("\n=== WEIBEL GENERATIONS WITH CARINA ===")
+        
+        if 'generation' not in self.branch_metrics_df.columns:
+            raise ValueError("Assign generations first with assign_generations_weibel()")
+        
+        if not hasattr(self, 'carina_node'):
+            self.identify_carina()
+        
+        fig = plt.figure(figsize=(16, 12))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Filtra per generazione massima se specificata
+        if max_generation is not None:
+            plot_data = self.branch_metrics_df[self.branch_metrics_df['generation'] <= max_generation]
+        else:
+            plot_data = self.branch_metrics_df
+        
+        # Usa colormap discreta per le generazioni
+        max_gen = int(plot_data['generation'].max())
+        colors = plt.cm.tab20(np.linspace(0, 1, max_gen + 1))
+        
+        plotted_count = 0
+        for idx, row in plot_data.iterrows():
+            if pd.isna(row['generation']):
+                continue
+            
+            branch_id = int(row['branch_id'])
+            generation = int(row['generation'])
+            
+            try:
+                coords = self.skeleton_obj.path_coordinates(branch_id)
+                
+                if len(coords) > 1:
+                    z_coords = coords[:, 0]
+                    y_coords = coords[:, 1]
+                    x_coords = coords[:, 2]
+                    
+                    color = colors[generation % len(colors)]
+                    
+                    ax.plot(x_coords, y_coords, z_coords, 
+                        color=color, linewidth=2, alpha=0.8)
+                    plotted_count += 1
+                    
+            except Exception as e:
+                continue
+        
+        # Evidenzia la CARINA con PUNTINO ROSSO
+        carina_pos = self.graph.nodes[self.carina_node]['pos']
+        ax.scatter(carina_pos[2], carina_pos[1], carina_pos[0],
+                c='red', s=300, marker='o', edgecolors='black', linewidths=3,
+                label=f'Carina (Ø={self.carina_info["avg_branch_diameter"]:.1f}mm)')
+        
+        # Aggiungi etichetta alla carina con coordinate
+        coord_text = f'CARINA\nX:{carina_pos[2]:.1f}\nY:{carina_pos[1]:.1f}\nZ:{carina_pos[0]:.1f}'
+        ax.text(carina_pos[2], carina_pos[1], carina_pos[0] + 15, 
+            coord_text, fontsize=11, fontweight='bold', color='red', ha='center',
+            bbox=dict(boxstyle="round,pad=0.4", facecolor='white', alpha=0.9))
+        
+        print(f"Branches plotted: {plotted_count}")
+        
+        # Crea legenda
+        legend_elements = [plt.Line2D([0], [0], color=colors[i % len(colors)], 
+                                    linewidth=2, label=f'Gen {i}')
+                        for i in range(max_gen + 1)]
+        legend_elements.append(plt.Line2D([0], [0], marker='o', color='red', 
+                                        markersize=10, label='Carina', linewidth=0))
+        
+        ax.legend(handles=legend_elements, bbox_to_anchor=(1.15, 1), 
+                loc='upper left', fontsize=10)
+        
+        ax.set_xlabel('X (voxel)')
+        ax.set_ylabel('Y (voxel)')
+        ax.set_zlabel('Z (voxel)')
+        ax.set_title(f'Weibel Generations with Carina\n{plotted_count} branches, Carina = Largest diameter bifurcation')
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Visualization saved: {save_path}")
+        
+        plt.show()
+        return fig, ax
+
+    def get_carina_coordinates(self):
+        """
+        Restituisce le coordinate della carina in diversi sistemi di riferimento
+        """
+        if not hasattr(self, 'carina_info'):
+            self.identify_carina()
+        
+        carina_info = self.carina_info
+        
+        coordinates = {
+            'node_id': carina_info['node_id'],
+            'voxel_coordinates': {
+                'z': carina_info['coordinates_voxel'][0],
+                'y': carina_info['coordinates_voxel'][1], 
+                'x': carina_info['coordinates_voxel'][2]
+            },
+            'world_coordinates': {
+                'x': carina_info['coordinates_world'][0],
+                'y': carina_info['coordinates_world'][1],
+                'z': carina_info['coordinates_world'][2]
+            },
+            'physical_coordinates_mm': {
+                'x': carina_info['coordinates_world'][0] * self.spacing[0],
+                'y': carina_info['coordinates_world'][1] * self.spacing[1],
+                'z': carina_info['coordinates_world'][2] * self.spacing[2]
+            },
+            'diameter_info': {
+                'avg_branch_diameter_mm': carina_info['avg_branch_diameter'],
+                'diameter_at_node_mm': carina_info['diameter_at_node'],
+                'degree': carina_info['degree']
+            }
+        }
+        
+        print("\n=== CARINA COORDINATES ===")
+        print(f"Node ID: {coordinates['node_id']}")
+        print(f"Voxel coordinates (z,y,x): ({coordinates['voxel_coordinates']['z']}, {coordinates['voxel_coordinates']['y']}, {coordinates['voxel_coordinates']['x']})")
+        print(f"World coordinates (x,y,z): ({coordinates['world_coordinates']['x']:.1f}, {coordinates['world_coordinates']['y']:.1f}, {coordinates['world_coordinates']['z']:.1f})")
+        print(f"Physical coordinates (mm): ({coordinates['physical_coordinates_mm']['x']:.1f}, {coordinates['physical_coordinates_mm']['y']:.1f}, {coordinates['physical_coordinates_mm']['z']:.1f})")
+        print(f"Diameter: {coordinates['diameter_info']['avg_branch_diameter_mm']:.2f} mm")
+        print(f"Degree: {coordinates['diameter_info']['degree']}")
+        
+        return coordinates
+
+    def visualize_diameter_analysis_with_carina(self, save_path=None):
+        """
+        Visualizza l'analisi dei diametri con la carina evidenziata
+        """
+        if not hasattr(self, 'branch_metrics_df'):
+            raise ValueError("Calculate metrics first")
+        
+        if not hasattr(self, 'carina_node'):
+            self.identify_carina_with_diameter()
+        
+        fig = plt.figure(figsize=(14, 10))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        color_values = self.branch_metrics_df['diameter_mean_mm']
+        norm = Normalize(vmin=color_values.min(), vmax=color_values.max())
+        cmap = plt.cm.viridis
+        
+        plotted_count = 0
+        for idx, row in self.branch_metrics_df.iterrows():
+            branch_id = int(row['branch_id'])
+            diameter = row['diameter_mean_mm']
+            
+            try:
+                coords = self.skeleton_obj.path_coordinates(branch_id)
+                
+                if len(coords) > 1:
+                    z_coords = coords[:, 0]
+                    y_coords = coords[:, 1]
+                    x_coords = coords[:, 2]
+                    
+                    color = cmap(norm(diameter))
+                    
+                    ax.plot(x_coords, y_coords, z_coords, 
+                        color=color, linewidth=3, alpha=0.8)
+                    plotted_count += 1
+                    
+            except Exception as e:
+                continue
+        
+        # Evidenzia la CARINA in ROSSO
+        carina_pos = self.graph.nodes[self.carina_node]['pos']
+        ax.scatter(carina_pos[2], carina_pos[1], carina_pos[0],
+                c='red', s=500, marker='*', edgecolors='black', linewidths=3,
+                label=f'Carina (Ø={self.carina_info["avg_branch_diameter"]:.1f}mm)')
+        
+        # Aggiungi etichetta alla carina
+        ax.text(carina_pos[2], carina_pos[1], carina_pos[0] + 20, 
+            f'CARINA\nØ={self.carina_info["avg_branch_diameter"]:.1f}mm', 
+            fontsize=12, fontweight='bold', color='red', ha='center',
+            bbox=dict(boxstyle="round,pad=0.5", facecolor='white', alpha=0.9))
+        
+        print(f"Branches plotted: {plotted_count}")
+        
+        sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, shrink=0.8, aspect=20)
+        cbar.set_label('Mean Diameter (mm)', rotation=270, labelpad=20)
+        
+        ax.set_xlabel('X (voxel)')
+        ax.set_ylabel('Y (voxel)')
+        ax.set_zlabel('Z (voxel)')
+        ax.set_title(f'Bronchial Tree - Diameter Analysis\nCarina highlighted in red (largest diameter)')
+        ax.legend()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Diameter visualization with carina saved: {save_path}")
+        
+        plt.show()
+        return fig, ax
+    
     def plot_weibel_tapering_analysis(self, save_path=None):
         """
         Creates comprehensive visualization of diameter tapering across generations
@@ -1781,18 +2073,6 @@ class AirwayGraphAnalyzer:
                 color_by='length'
             )
             
-            # NUOVE VISUALIZZAZIONI CON ETICHETTE
-            self.visualize_graph_with_generations(
-                save_path=os.path.join(output_dir, "graph_with_generations.png"),
-                show_node_labels=True,
-                show_branch_labels=True
-            )
-            
-            self.visualize_weibel_generations_enhanced(
-                save_path=os.path.join(output_dir, "weibel_generations_enhanced.png"),
-                show_labels=True
-            )
-            
             self.visualize_weibel_generations(
                 save_path=os.path.join(output_dir, "weibel_generations.png")
             )
@@ -1816,7 +2096,11 @@ class AirwayGraphAnalyzer:
             self.plot_length_distribution(
                 save_path=os.path.join(output_dir, "length_distribution.png")
             )
-        
+
+            self.visualize_weibel_generations_with_carina(
+                save_path=os.path.join(output_dir, "weibel_generations_with_carina.png")
+            )
+            
         # 15. Summary
         self.get_branch_summary()
         

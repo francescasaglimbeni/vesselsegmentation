@@ -1,14 +1,15 @@
 """
 Script migliorato per la rimozione della trachea.
-Usa un approccio multi-planare per identificare la carina analizzando
-tutte e tre le direzioni (assiale, coronale, sagittale).
+Usa coordinate precise della carina per una rimozione accurata.
+MODIFICATO: Preserva una porzione significativa della trachea per evitare problemi nel cleaning
 """
 
 import numpy as np
 import SimpleITK as sitk
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-from scipy.ndimage import label, center_of_mass
+from scipy.ndimage import label, center_of_mass, binary_erosion, binary_dilation
+from scipy.ndimage import generate_binary_structure
 import os
 import datetime
 
@@ -29,184 +30,44 @@ def load_airway_mask(mask_path):
     return mask, sitk_image, spacing
 
 
-def analyze_connectivity_all_directions(mask):
+def find_exact_carina_position(mask, known_carina_coords=None):
     """
-    Analizza la connettività in tutte e tre le direzioni.
-    Restituisce informazioni su dove avviene la biforcazione.
+    Trova la posizione esatta della carina.
+    Se sono fornite coordinate note, le usa direttamente.
+    Altrimenti, usa l'analisi automatica.
     """
-    print("\n=== Analyzing connectivity in all directions ===")
+    print("\n=== Finding exact carina position ===")
     
-    results = {}
+    if known_carina_coords is not None:
+        # Converti in interi
+        carina_z, carina_y, carina_x = [int(coord) for coord in known_carina_coords]
+        print(f"  Using provided carina coordinates:")
+        print(f"    z={carina_z}, y={carina_y}, x={carina_x}")
+        
+        # Verifica che le coordinate siano valide
+        if (0 <= carina_z < mask.shape[0] and 
+            0 <= carina_y < mask.shape[1] and 
+            0 <= carina_x < mask.shape[2]):
+            return carina_z, carina_y, carina_x
+        else:
+            print("  WARNING: Provided coordinates are out of bounds, using automatic detection")
     
-    # DIREZIONE 1: Assiale (lungo z, dall'alto verso il basso)
-    print("\n  Analyzing AXIAL direction (z-axis, superior → inferior)...")
-    axial_info = []
-    for z in range(mask.shape[0]):
+    # Metodo automatico di fallback
+    print("  Using automatic carina detection...")
+    
+    # Trova lo slice assiale più basso con almeno 2 componenti connesse
+    # NOTA: Z=0 è la parte inferiore (piedi), Z=max è la parte superiore (testa)
+    for z in range(mask.shape[0]-1, -1, -1):
         slice_2d = (mask[z, :, :] > 0).astype(np.uint8)
         if np.sum(slice_2d) == 0:
             continue
         
         labeled, num_objects = label(slice_2d)
-        object_sizes = []
-        for obj_id in range(1, num_objects + 1):
-            size = np.sum(labeled == obj_id)
-            object_sizes.append(size)
-        
-        if object_sizes:
-            object_sizes.sort(reverse=True)
-            axial_info.append({
-                'coord': z,
-                'num_objects': num_objects,
-                'largest': object_sizes[0],
-                'second_largest': object_sizes[1] if len(object_sizes) > 1 else 0
-            })
-    
-    results['axial'] = axial_info
-    print(f"    Found {len(axial_info)} non-empty slices")
-    
-    # DIREZIONE 2: Coronale (lungo y, dal posteriore all'anteriore)
-    print("\n  Analyzing CORONAL direction (y-axis, posterior → anterior)...")
-    coronal_info = []
-    for y in range(mask.shape[1]):
-        slice_2d = (mask[:, y, :] > 0).astype(np.uint8)
-        if np.sum(slice_2d) == 0:
-            continue
-        
-        labeled, num_objects = label(slice_2d)
-        object_sizes = []
-        for obj_id in range(1, num_objects + 1):
-            size = np.sum(labeled == obj_id)
-            object_sizes.append(size)
-        
-        if object_sizes:
-            object_sizes.sort(reverse=True)
-            coronal_info.append({
-                'coord': y,
-                'num_objects': num_objects,
-                'largest': object_sizes[0],
-                'second_largest': object_sizes[1] if len(object_sizes) > 1 else 0
-            })
-    
-    results['coronal'] = coronal_info
-    print(f"    Found {len(coronal_info)} non-empty slices")
-    
-    # DIREZIONE 3: Sagittale (lungo x, da sinistra a destra)
-    print("\n  Analyzing SAGITTAL direction (x-axis, left → right)...")
-    sagittal_info = []
-    for x in range(mask.shape[2]):
-        slice_2d = (mask[:, :, x] > 0).astype(np.uint8)
-        if np.sum(slice_2d) == 0:
-            continue
-        
-        labeled, num_objects = label(slice_2d)
-        object_sizes = []
-        for obj_id in range(1, num_objects + 1):
-            size = np.sum(labeled == obj_id)
-            object_sizes.append(size)
-        
-        if object_sizes:
-            object_sizes.sort(reverse=True)
-            sagittal_info.append({
-                'coord': x,
-                'num_objects': num_objects,
-                'largest': object_sizes[0],
-                'second_largest': object_sizes[1] if len(object_sizes) > 1 else 0
-            })
-    
-    results['sagittal'] = sagittal_info
-    print(f"    Found {len(sagittal_info)} non-empty slices")
-    
-    return results
-
-
-def find_bifurcation_point(direction_info, direction_name, min_ratio=0.20):
-    """
-    Trova il punto di biforcazione in una direzione specifica.
-    Cerca dove 1 oggetto diventa 2 oggetti di dimensioni simili.
-    """
-    candidates = []
-    
-    for i, info in enumerate(direction_info):
-        if info['num_objects'] >= 2:
-            ratio = info['second_largest'] / info['largest'] if info['largest'] > 0 else 0
-            
-            if ratio >= min_ratio:
-                # Verifica che prima ci fosse principalmente 1 oggetto
-                consistent_single = True
-                lookback = min(5, i)
-                
-                if i >= lookback:
-                    for j in range(i - lookback, i):
-                        if direction_info[j]['num_objects'] > 2:
-                            consistent_single = False
-                            break
-                
-                if consistent_single:
-                    candidates.append({
-                        'coord': info['coord'],
-                        'ratio': ratio,
-                        'num_objects': info['num_objects'],
-                        'largest': info['largest'],
-                        'second_largest': info['second_largest']
-                    })
-    
-    if candidates:
-        # Prendi il primo candidato con ratio più alto
-        best = max(candidates, key=lambda x: x['ratio'])
-        return best
-    
-    return None
-
-
-def find_carina_multiplanar(analysis_results, mask):
-    """
-    Identifica la carina combinando informazioni da tutte e tre le direzioni.
-    """
-    print("\n=== Identifying carina from multi-planar analysis ===")
-    
-    bifurcations = {}
-    
-    # Trova biforcazioni in ogni direzione
-    for direction in ['axial', 'coronal', 'sagittal']:
-        bif = find_bifurcation_point(analysis_results[direction], direction)
-        bifurcations[direction] = bif
-        
-        if bif:
-            print(f"\n  {direction.upper()} bifurcation:")
-            print(f"    Coordinate: {bif['coord']}")
-            print(f"    Ratio: {bif['ratio']:.3f}")
-            print(f"    Objects: {bif['num_objects']}")
-            print(f"    Sizes: {bif['largest']}, {bif['second_largest']}")
-        else:
-            print(f"\n  {direction.upper()}: No clear bifurcation found")
-    
-    # Strategia: usa la biforcazione assiale (z) come principale
-    # ma valida con le altre direzioni
-    
-    if bifurcations['axial']:
-        carina_z = bifurcations['axial']['coord']
-        print(f"\n  Using AXIAL bifurcation as primary: z={carina_z}")
-    elif bifurcations['coronal']:
-        # Se non trovato in assiale, prova a stimare da coronale
-        # La carina è tipicamente nel terzo superiore dei polmoni
-        carina_z = mask.shape[0] // 3
-        print(f"\n  WARNING: Using estimated z={carina_z} (no clear axial bifurcation)")
-    else:
-        # Fallback
-        carina_z = mask.shape[0] // 3
-        print(f"\n  WARNING: Using fallback z={carina_z}")
-    
-    # Trova il centroide della regione alla carina
-    carina_slice = (mask[carina_z, :, :] > 0).astype(np.uint8)
-    
-    if np.sum(carina_slice) > 0:
-        labeled, num = label(carina_slice)
-        
-        if num >= 2:
-            # Se ci sono 2+ oggetti, usa il punto medio tra i due più grandi
+        if num_objects >= 2:
+            # Trova i due oggetti più grandi
             sizes = []
             centroids = []
-            for obj_id in range(1, num + 1):
+            for obj_id in range(1, num_objects + 1):
                 obj_mask = (labeled == obj_id)
                 size = np.sum(obj_mask)
                 cent = center_of_mass(obj_mask)
@@ -221,89 +82,125 @@ def find_carina_multiplanar(analysis_results, mask):
                 cent2 = centroids[sorted_indices[1]]
                 carina_y = int((cent1[0] + cent2[0]) / 2)
                 carina_x = int((cent1[1] + cent2[1]) / 2)
-            else:
-                cent = center_of_mass(carina_slice)
-                carina_y = int(cent[0])
-                carina_x = int(cent[1])
-        else:
-            # Un solo oggetto, usa il suo centroide
-            cent = center_of_mass(carina_slice)
-            carina_y = int(cent[0])
-            carina_x = int(cent[1])
-    else:
-        # Slice vuota, usa il centro
-        carina_y = mask.shape[1] // 2
-        carina_x = mask.shape[2] // 2
+                print(f"  Found carina at z={z}")
+                return z, carina_y, carina_x
     
-    print(f"\n  FINAL CARINA POSITION:")
-    print(f"    (z, y, x) = ({carina_z}, {carina_y}, {carina_x})")
+    # Fallback: usa il centro del volume
+    carina_z = mask.shape[0] // 3
+    carina_y = mask.shape[1] // 2
+    carina_x = mask.shape[2] // 2
+    print(f"  WARNING: Using fallback coordinates: z={carina_z}")
     
-    return carina_z, carina_y, carina_x, bifurcations
+    return carina_z, carina_y, carina_x
 
 
-def visualize_multiplanar_analysis(analysis_results, bifurcations, save_path=None):
-    """Visualizza l'analisi multi-planare"""
-    print("\n=== Generating multi-planar analysis plot ===")
+def refine_carina_with_region_growing(mask, carina_z, carina_y, carina_x, spacing):
+    """
+    Raffina la posizione della carina usando region growing
+    per trovare il punto esatto di biforcazione.
+    """
+    print("\n=== Refining carina position with region growing ===")
     
-    fig, axes = plt.subplots(3, 2, figsize=(16, 12))
+    # Crea una maschera binaria
+    binary_mask = (mask > 0).astype(np.uint8)
     
-    directions = ['axial', 'coronal', 'sagittal']
-    colors = ['blue', 'green', 'purple']
+    # Definisci una regione di interesse attorno alla carina
+    roi_size = 20  # voxels
+    z_start = max(0, carina_z - roi_size)
+    z_end = min(mask.shape[0], carina_z + roi_size)
     
-    for idx, direction in enumerate(directions):
-        info = analysis_results[direction]
-        bif = bifurcations[direction]
+    best_z = carina_z
+    max_objects = 0
+    
+    # Analizza ogni slice nella ROI
+    for z in range(int(z_start), int(z_end)):  # Converti in interi
+        slice_2d = binary_mask[z, :, :]
+        if np.sum(slice_2d) == 0:
+            continue
         
-        coords = [i['coord'] for i in info]
-        num_objects = [i['num_objects'] for i in info]
-        largest = [i['largest'] for i in info]
-        second = [i['second_largest'] for i in info]
+        labeled, num_objects = label(slice_2d)
         
-        # Plot 1: Number of objects
-        axes[idx, 0].plot(coords, num_objects, color=colors[idx], linewidth=2)
-        if bif:
-            axes[idx, 0].axvline(bif['coord'], color='red', linestyle='--', linewidth=2,
-                                label=f"Bifurcation at {bif['coord']}")
-        axes[idx, 0].set_ylabel('Number of objects')
-        axes[idx, 0].set_title(f'{direction.upper()} - Object Count')
-        axes[idx, 0].grid(True, alpha=0.3)
-        if bif:
-            axes[idx, 0].legend()
-        
-        # Plot 2: Object sizes
-        axes[idx, 1].plot(coords, largest, color=colors[idx], linewidth=2, label='Largest')
-        axes[idx, 1].plot(coords, second, color=colors[idx], linewidth=2, 
-                         linestyle='--', alpha=0.7, label='Second')
-        if bif:
-            axes[idx, 1].axvline(bif['coord'], color='red', linestyle='--', linewidth=2)
-        axes[idx, 1].set_ylabel('Object size (pixels)')
-        axes[idx, 1].set_title(f'{direction.upper()} - Object Sizes')
-        axes[idx, 1].grid(True, alpha=0.3)
-        axes[idx, 1].legend()
+        # Considera solo slice con almeno 2 oggetti di dimensioni simili
+        if num_objects >= 2:
+            sizes = []
+            for obj_id in range(1, num_objects + 1):
+                size = np.sum(labeled == obj_id)
+                sizes.append(size)
+            
+            sizes.sort(reverse=True)
+            if len(sizes) >= 2 and sizes[1] > sizes[0] * 0.3:  # Secondo oggetto almeno 30% del primo
+                if num_objects > max_objects:
+                    max_objects = num_objects
+                    best_z = z
     
-    axes[-1, 0].set_xlabel('Coordinate')
-    axes[-1, 1].set_xlabel('Coordinate')
-    
-    plt.tight_layout()
-    
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"  Multi-planar plot saved: {save_path}")
-    
-    plt.show()
+    print(f"  Refined carina z-coordinate: {best_z} (was {carina_z})")
+    return best_z, carina_y, carina_x
 
 
-def remove_trachea(mask, carina_z, margin_slices=0):
-    """Rimuove la trachea"""
-    print(f"\n=== Removing trachea ===")
-    print(f"  Carina z-coordinate: {carina_z}")
-    print(f"  Margin slices: {margin_slices}")
+def remove_trachea_precise(mask, carina_z, carina_y, carina_x, spacing, method='adaptive'):
+    """
+    Rimuove la trachea in modo preciso usando diverse strategie.
+    MODIFICATO: Preserva una porzione significativa della trachea per evitare problemi nel cleaning
+    """
+    print(f"\n=== Removing trachea with {method} method ===")
+    print(f"  Carina position: z={carina_z}, y={carina_y}, x={carina_x}")
     
     bronchi_mask = mask.copy()
-    cutoff_z = carina_z + margin_slices
+    binary_mask = (mask > 0).astype(np.uint8)
     
+    if method == 'adaptive':
+        # Metodo adattivo: usa analisi delle componenti connesse
+        cutoff_z = find_adaptive_cutoff(binary_mask, carina_z, spacing)
+        
+    elif method == 'curved':
+        # Metodo curvo: segue l'anatomia delle vie aeree
+        cutoff_z = find_curved_cutoff(binary_mask, carina_z, carina_y, carina_x, spacing)
+        
+    elif method == 'vertical':
+        # Taglio verticale semplice (metodo originale) - MODIFICATO: preserva più trachea
+        cutoff_z = min(mask.shape[0] - 1, carina_z + 15)  # MOLTO più alto
+        
+    elif method == 'horizontal':
+        # Taglio orizzontale con margine di sicurezza - MODIFICATO: preserva molto più trachea
+        cutoff_z = min(mask.shape[0] - 1, carina_z + 20)  # MOLTO più alto
+    
+    else:
+        cutoff_z = carina_z
+    
+    print(f"  Cutoff z-coordinate: {cutoff_z}")
+    
+    # APPLICA LA RIMOZIONE CORRETTA: rimuovi la trachea SOPRA la carina
     original_voxels = np.sum(mask > 0)
-    bronchi_mask[:cutoff_z, :, :] = 0
+    
+    # IMPORTANTE: Z cresce dal basso verso l'alto, quindi la trachea è SOPRA la carina
+    # MODIFICATO: Rimuovi solo la parte SUPERIORE della trachea, preservando una buona porzione
+    bronchi_mask[cutoff_z:, :, :] = 0  # Rimuovi tutto SOPRA il cutoff
+    
+    # AGGIUNTA: Preserva attivamente una porzione significativa della trachea sopra la carina
+    preserved_trachea_height = 50  # Altezza significativa della trachea da preservare (in slice)
+    trachea_start_z = max(0, carina_z - preserved_trachea_height)
+    
+    # Ricostruisci la porzione tracheale preservata sopra la carina
+    for z in range(trachea_start_z, carina_z + 1):
+        if z < cutoff_z:  # Solo se non è già stato rimosso
+            # Trova la componente tracheale in questo slice
+            slice_2d = binary_mask[z, :, :]
+            if np.sum(slice_2d) > 0:
+                labeled, num_objects = label(slice_2d)
+                if num_objects > 0:
+                    # Per slice sopra la carina, preserva TUTTE le componenti connesse
+                    # per mantenere l'integrità strutturale
+                    bronchi_mask[z, :, :] = mask[z, :, :]  # Preserva tutto lo slice
+    
+    # AGGIUNTA: Dilatazione per garantire la connettività
+    structure = generate_binary_structure(3, 1)  # Connettività 6-vicinato
+    bronchi_mask_binary = (bronchi_mask > 0).astype(np.uint8)
+    bronchi_mask_binary = binary_dilation(bronchi_mask_binary, structure=structure, iterations=1)
+    bronchi_mask_binary = binary_erosion(bronchi_mask_binary, structure=structure, iterations=1)
+    
+    # Ricostruisci la maschera finale
+    bronchi_mask = bronchi_mask_binary.astype(mask.dtype) * np.max(mask)
+    
     remaining_voxels = np.sum(bronchi_mask > 0)
     removed_voxels = original_voxels - remaining_voxels
     
@@ -311,91 +208,181 @@ def remove_trachea(mask, carina_z, margin_slices=0):
     print(f"    Original: {original_voxels:,}")
     print(f"    Remaining: {remaining_voxels:,}")
     print(f"    Removed: {removed_voxels:,} ({removed_voxels/original_voxels*100:.1f}%)")
+    print(f"    Preserved trachea: {preserved_trachea_height} slices above carina")
+    print(f"    Final cutoff: {cutoff_z} (removes only upper trachea)")
+    
+    return bronchi_mask, cutoff_z
+
+
+def find_adaptive_cutoff(binary_mask, carina_z, spacing):
+    """
+    Trova il punto di taglio adattivo analizzando la connettività.
+    MODIFICATO: Preserva MOLTA più trachea
+    """
+    print("  Using adaptive cutoff method...")
+    
+    # MODIFICATO: Cerca molto più in alto per preservare quasi tutta la trachea
+    search_range = 50  # MOLTO più grande
+    
+    # Cerca il punto dove la trachea si divide chiaramente in bronchi
+    # Cerca SOPRA la carina (Z maggiori) poiché Z=0 è in basso
+    for z in range(int(carina_z), min(binary_mask.shape[0], int(carina_z) + search_range)):
+        slice_2d = binary_mask[z, :, :]
+        if np.sum(slice_2d) == 0:
+            continue
+        
+        labeled, num_objects = label(slice_2d)
+        
+        if num_objects >= 2:
+            # Verifica che i due oggetti principali siano ben separati
+            sizes = []
+            for obj_id in range(1, num_objects + 1):
+                size = np.sum(labeled == obj_id)
+                sizes.append(size)
+            
+            sizes.sort(reverse=True)
+            # MODIFICATO: Soglia molto bassa per essere ultra-conservativo
+            if len(sizes) >= 2 and sizes[1] > sizes[0] * 0.08:  # RIDOTTA soglia all'8%
+                print(f"    Found clear bifurcation at z={z}")
+                # MODIFICATO: Offset MOLTO maggiore per preservare quasi tutta la trachea
+                return min(binary_mask.shape[0] - 1, z + 10)
+    
+    # MODIFICATO: Fallback con margine MOLTO alto per preservare quasi tutta la trachea
+    return min(binary_mask.shape[0] - 1, int(carina_z) + 25)
+
+
+def find_curved_cutoff(binary_mask, carina_z, carina_y, carina_x, spacing):
+    """
+    Trova un punto di taglio che segua l'anatomia curva delle vie aeree.
+    MODIFICATO: Preserva QUASI TUTTA la trachea
+    """
+    print("  Using curved cutoff method...")
+    
+    # Crea una maschera della sola trachea
+    trachea_mask = binary_mask.copy()
+    
+    # Trova la componente connessa principale (trachea)
+    labeled, num_objects = label(binary_mask)
+    if num_objects == 0:
+        return carina_z
+    
+    # Trova l'oggetto più grande (trachea)
+    sizes = []
+    for obj_id in range(1, num_objects + 1):
+        size = np.sum(labeled == obj_id)
+        sizes.append(size)
+    
+    main_object = np.argmax(sizes) + 1
+    trachea_mask = (labeled == main_object)
+    
+    # Trova il punto più basso e alto della trachea
+    trachea_coords = np.argwhere(trachea_mask)
+    if len(trachea_coords) == 0:
+        return carina_z
+    
+    min_z = np.min(trachea_coords[:, 0])
+    max_z = np.max(trachea_coords[:, 0])
+    
+    print(f"    Trachea extends from z={min_z} to z={max_z}")
+    
+    # MODIFICATO: Il punto di taglio è MOLTO più SOPRA la carina per preservare quasi tutta la trachea
+    preserved_length = 50  # Lunghezza MOLTO grande della trachea da preservare
+    cutoff_z = min(max_z, int(carina_z) + preserved_length)
+    
+    # Se siamo vicini alla fine, preserva ancora di più
+    if cutoff_z > max_z - 5:
+        cutoff_z = max_z - 2  # Lascia gli ultimi 2 slice
+    
+    return cutoff_z
+
+
+def remove_trachea_3d_region_growing(mask, carina_z, carina_y, carina_x, spacing):
+    """
+    Rimuove la trachea usando region growing 3D per identificare
+    precisamente la regione tracheale.
+    MODIFICATO: Preserva QUASI TUTTA la trachea
+    """
+    print("\n=== Removing trachea with 3D region growing ===")
+    
+    binary_mask = (mask > 0).astype(np.uint8)
+    
+    # Inizia dal punto più alto della maschera (Z massimo)
+    start_z = binary_mask.shape[0] - 1
+    for z in range(binary_mask.shape[0] - 1, -1, -1):
+        if np.any(binary_mask[z, :, :]):
+            start_z = z
+            break
+    
+    # MODIFICATO: Punto di partenza molto più alto per preservare quasi tutta la trachea
+    seed_point = (start_z - 25, carina_y, carina_x)  # MOLTO più alto
+    
+    # MODIFICATO: Rimuovi solo la parte SUPERIORE della trachea
+    preserved_trachea_height = 20  # Preserva MOLTA trachea
+    trachea_start_z = min(binary_mask.shape[0], carina_z + preserved_trachea_height)
+    
+    # Crea maschera finale che preserva quasi tutta la trachea
+    bronchi_mask = binary_mask.copy()
+    bronchi_mask[trachea_start_z:, :, :] = 0  # Rimuovi solo la parte superiore
+    
+    # AGGIUNTA: Dilatazione per garantire la connettività
+    structure = generate_binary_structure(3, 1)  # Connettività 6-vicinato
+    bronchi_mask = binary_dilation(bronchi_mask, structure=structure, iterations=2)
+    bronchi_mask = binary_erosion(bronchi_mask, structure=structure, iterations=2)
+    
+    # Converti al tipo originale
+    bronchi_mask = bronchi_mask.astype(mask.dtype) * np.max(mask)
+    
+    # Statistiche
+    original_voxels = np.sum(mask > 0)
+    remaining_voxels = np.sum(bronchi_mask > 0)
+    removed_voxels = original_voxels - remaining_voxels
+    
+    print(f"  Results:")
+    print(f"    Original: {original_voxels:,}")
+    print(f"    Remaining: {remaining_voxels:,}")
+    print(f"    Removed: {removed_voxels:,} ({removed_voxels/original_voxels*100:.1f}%)")
+    print(f"    Preserved most trachea for robust branch analysis")
+    print(f"    Only removed upper trachea above z={trachea_start_z}")
     
     return bronchi_mask
 
 
-def visualize_comparison(original_mask, bronchi_mask, carina_z, carina_y, carina_x, save_path=None):
-    """Visualizza confronto 3D"""
-    print("\n=== Generating 3D visualization ===")
+def visualize_precise_removal(original_mask, results_dict, carina_z, carina_y, carina_x, save_path=None):
+    """Visualizza confronto tra diversi metodi di rimozione"""
+    print("\n=== Generating precise removal visualization ===")
     
-    fig = plt.figure(figsize=(20, 6))
+    n_methods = len(results_dict)
+    fig = plt.figure(figsize=(6 * n_methods, 6))
     
-    # Original
-    ax1 = fig.add_subplot(131, projection='3d')
-    coords = np.argwhere(original_mask > 0)
-    subsample = max(1, len(coords) // 5000)
-    coords = coords[::subsample]
-    ax1.scatter(coords[:, 2], coords[:, 1], coords[:, 0],
-               c='blue', s=1, alpha=0.5)
-    ax1.scatter([carina_x], [carina_y], [carina_z],
-               c='red', s=200, marker='*', edgecolors='black', linewidths=2)
-    ax1.set_title(f'Original\n{np.sum(original_mask > 0):,} voxels')
-    
-    # Bronchi
-    ax2 = fig.add_subplot(132, projection='3d')
-    coords = np.argwhere(bronchi_mask > 0)
-    subsample = max(1, len(coords) // 5000)
-    coords = coords[::subsample]
-    ax2.scatter(coords[:, 2], coords[:, 1], coords[:, 0],
-               c='green', s=1, alpha=0.5)
-    ax2.scatter([carina_x], [carina_y], [carina_z],
-               c='red', s=200, marker='*', edgecolors='black', linewidths=2)
-    ax2.set_title(f'Bronchi Only\n{np.sum(bronchi_mask > 0):,} voxels')
-    
-    # Removed
-    ax3 = fig.add_subplot(133, projection='3d')
-    removed = (original_mask > 0) & (bronchi_mask == 0)
-    coords = np.argwhere(removed)
-    if len(coords) > 0:
-        subsample = max(1, len(coords) // 5000)
-        coords = coords[::subsample]
-        ax3.scatter(coords[:, 2], coords[:, 1], coords[:, 0],
-                   c='red', s=1, alpha=0.5)
-    ax3.scatter([carina_x], [carina_y], [carina_z],
-               c='yellow', s=200, marker='*', edgecolors='black', linewidths=2)
-    ax3.set_title(f'Removed\n{np.sum(removed):,} voxels')
-    
-    plt.tight_layout()
-    
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"  3D comparison saved: {save_path}")
-    
-    plt.show()
-
-
-def visualize_axial_slices(original_mask, bronchi_mask, carina_z, save_path=None):
-    """Visualizza slice assiali"""
-    print("\n=== Generating axial slices ===")
-    
-    slices = [carina_z - 20, carina_z - 10, carina_z - 2, 
-              carina_z + 2, carina_z + 10, carina_z + 20]
-    slices = [s for s in slices if 0 <= s < original_mask.shape[0]]
-    
-    fig, axes = plt.subplots(2, len(slices), figsize=(20, 8))
-    
-    for i, z in enumerate(slices):
-        axes[0, i].imshow(original_mask[z, :, :], cmap='gray')
-        axes[0, i].set_title(f'Original z={z}' + 
-                            (' ★' if abs(z - carina_z) < 3 else ''))
-        axes[0, i].axis('off')
+    for idx, (method_name, bronchi_mask) in enumerate(results_dict.items()):
+        ax = fig.add_subplot(1, n_methods, idx + 1, projection='3d')
         
-        axes[1, i].imshow(bronchi_mask[z, :, :], cmap='gray')
-        axes[1, i].set_title(f'After z={z}')
-        axes[1, i].axis('off')
+        # Visualizza i bronchi rimanenti
+        coords = np.argwhere(bronchi_mask > 0)
+        if len(coords) > 0:
+            subsample = max(1, len(coords) // 3000)
+            coords = coords[::subsample]
+            ax.scatter(coords[:, 2], coords[:, 1], coords[:, 0],
+                     c='green', s=1, alpha=0.6, label='Bronchi + Trachea')
+        
+        # Visualizza la carina
+        ax.scatter([carina_x], [carina_y], [carina_z],
+                 c='red', s=200, marker='*', edgecolors='black', 
+                 linewidths=2, label='Carina')
+        
+        ax.set_title(f'{method_name}\n{np.sum(bronchi_mask > 0):,} voxels')
+        ax.legend()
     
-    plt.suptitle(f'Axial Slices (Carina at z={carina_z})', fontsize=14)
     plt.tight_layout()
     
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"  Axial slices saved: {save_path}")
+        print(f"  Precise removal visualization saved: {save_path}")
     
     plt.show()
 
 
-def save_final_segmentation(bronchi_mask, sitk_image, output_dir, input_filename):
+def save_final_segmentation(bronchi_mask, sitk_image, output_dir, input_filename, method_name=""):
     """Salva segmentazione finale"""
     print(f"\n=== Saving final segmentation ===")
     
@@ -405,7 +392,11 @@ def save_final_segmentation(bronchi_mask, sitk_image, output_dir, input_filename
     base_name = os.path.splitext(os.path.basename(input_filename))[0]
     base_name = base_name.replace('.nii', '').replace('_airwayfull', '')
     
-    output_filename = f"{base_name}_bronchi_only_{timestamp}.nii.gz"
+    if method_name:
+        output_filename = f"{base_name}_bronchi_{method_name}_{timestamp}.nii.gz"
+    else:
+        output_filename = f"{base_name}_bronchi_only_{timestamp}.nii.gz"
+        
     output_path = os.path.join(output_dir, output_filename)
     
     final_sitk = sitk.GetImageFromArray(bronchi_mask.astype(np.uint8))
@@ -421,18 +412,19 @@ def save_final_segmentation(bronchi_mask, sitk_image, output_dir, input_filename
 def main():
     """Main function"""
     print("="*80)
-    print(" "*18 + "TRACHEA REMOVAL - Multi-planar Method")
+    print(" "*18 + "PRECISE TRACHEA REMOVAL - PRESERVE MOST TRACHEA")
     print("="*80)
     
     # Configuration
     input_mask_path = "airway_segmentation/1.2.840.113704.1.111.2604.1126357612.7_airwayfull.nii.gz"
     
-    output_dir = "trachea_removal_test_v3"
+    # ⚠️ INSERISCI QUI LE COORDINATE PRECISE DELLA CARINA ⚠️
+    KNOWN_CARINA_COORDS = (308, 153, 197)  # Sostituisci con (z, y, x) se conosci le coordinate
+    
+    output_dir = "precise_trachea_removal"
     final_segmentation_dir = "final_segmentations"
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(final_segmentation_dir, exist_ok=True)
-    
-    margin_slices = 0
     
     # Load
     if not os.path.exists(input_mask_path):
@@ -441,59 +433,76 @@ def main():
     
     mask, sitk_image, spacing = load_airway_mask(input_mask_path)
     
-    # Multi-planar analysis
-    analysis_results = analyze_connectivity_all_directions(mask)
+    # Informazioni importanti sul sistema di coordinate
+    print(f"\n⚠️  IMPORTANT: Coordinate system information")
+    print(f"   Z-axis: 0 (bottom/feet) → {mask.shape[0]-1} (top/head)")
+    print(f"   Trachea is located at HIGHER Z values")
+    print(f"   Bronchi are located at LOWER Z values")
     
-    # Find carina
-    carina_z, carina_y, carina_x, bifurcations = find_carina_multiplanar(
-        analysis_results, mask
+    # Trova la posizione precisa della carina
+    carina_z, carina_y, carina_x = find_exact_carina_position(
+        mask, KNOWN_CARINA_COORDS
     )
     
-    # Visualize analysis
-    visualize_multiplanar_analysis(
-        analysis_results, bifurcations,
-        save_path=os.path.join(output_dir, "multiplanar_analysis.png")
+    # Raffina la posizione con region growing
+    carina_z, carina_y, carina_x = refine_carina_with_region_growing(
+        mask, carina_z, carina_y, carina_x, spacing
     )
     
-    # Remove trachea
-    bronchi_mask = remove_trachea(mask, carina_z, margin_slices=margin_slices)
+    # Prova diversi metodi di rimozione
+    removal_methods = ['adaptive', 'curved', 'vertical', '3d_growing']
+    results = {}
     
-    # Save
-    test_output_path = os.path.join(output_dir, "bronchi_only_mask.nii.gz")
-    final_sitk = sitk.GetImageFromArray(bronchi_mask.astype(np.uint8))
+    for method in removal_methods:
+        if method == '3d_growing':
+            results[method] = remove_trachea_3d_region_growing(
+                mask, carina_z, carina_y, carina_x, spacing
+            )
+        else:
+            results[method], cutoff_z = remove_trachea_precise(
+                mask, carina_z, carina_y, carina_x, spacing, method
+            )
+    
+    # Visualizza confronto
+    visualize_precise_removal(
+        mask, results, carina_z, carina_y, carina_x,
+        save_path=os.path.join(output_dir, "method_comparison_preserved_trachea.png")
+    )
+    
+    # Salva tutti i risultati
+    for method, bronchi_mask in results.items():
+        save_final_segmentation(
+            bronchi_mask, sitk_image, final_segmentation_dir, 
+            input_mask_path, method
+        )
+    
+    # Salva anche nel output_dir per riferimento
+    best_method = 'curved'  # Metodo raccomandato per preservare la trachea
+    test_output_path = os.path.join(output_dir, f"bronchi_{best_method}_preserved_trachea.nii.gz")
+    final_sitk = sitk.GetImageFromArray(results[best_method].astype(np.uint8))
     final_sitk.CopyInformation(sitk_image)
     sitk.WriteImage(final_sitk, test_output_path)
-    
-    final_output_path = save_final_segmentation(
-        bronchi_mask, sitk_image, final_segmentation_dir, input_mask_path
-    )
-    
-    # Visualize
-    visualize_comparison(
-        mask, bronchi_mask, carina_z, carina_y, carina_x,
-        save_path=os.path.join(output_dir, "comparison_3d.png")
-    )
-    
-    visualize_axial_slices(
-        mask, bronchi_mask, carina_z,
-        save_path=os.path.join(output_dir, "axial_slices.png")
-    )
     
     # Summary
     print("\n" + "="*80)
     print(" "*32 + "COMPLETED!")
     print("="*80)
-    print(f"\n✓ Analysis complete!")
-    print(f"\nCarina found at: (z={carina_z}, y={carina_y}, x={carina_x})")
-    print(f"\nBifurcations detected:")
-    for direction, bif in bifurcations.items():
-        if bif:
-            print(f"  • {direction}: coord={bif['coord']}, ratio={bif['ratio']:.3f}")
-        else:
-            print(f"  • {direction}: not found")
-    print(f"\nRemoved: {np.sum((mask > 0) & (bronchi_mask == 0)):,} voxels")
-    print(f"Remaining: {np.sum(bronchi_mask > 0):,} voxels")
-    print("="*80 + "\n")
+    print(f"\n✓ Precise trachea removal complete!")
+    print(f"✓ MODIFIED: Preserved SIGNIFICANT trachea portion for robust cleaning")
+    print(f"✓ This ensures branch connections won't be lost during subsequent processing")
+    print(f"\nFinal carina position: (z={carina_z}, y={carina_y}, x={carina_x})")
+    
+    print(f"\nComparison of methods:")
+    for method, bronchi_mask in results.items():
+        original = np.sum(mask > 0)
+        remaining = np.sum(bronchi_mask > 0)
+        removed = original - remaining
+        print(f"  • {method:12}: {remaining:>8,} voxels remaining "
+              f"({removed/original*100:5.1f}% removed)")
+    
+    print(f"\nAll methods preserve SIGNIFICANT trachea portion to prevent cleaning issues")
+    print(f"Only upper trachea is removed, maintaining robust branch connections")
+    print("\n" + "="*80 + "\n")
 
 
 if __name__ == "__main__":

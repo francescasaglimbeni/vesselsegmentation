@@ -26,8 +26,8 @@ def main():
     # ========================================================================
     
     # Input: Original airway segmentation (trachea + bronchi from TotalSegmentator)
-    original_mask_path = "airway_segmentation/segm_cutted.seg.nrrd"
-    
+    # original_mask_path = "airway_segmentation/segm_cutted.seg.nrrd"
+    original_mask_path = "final_segmentations/1.2.840.113704.1.111.2604.1126357612.7_bronchi_curved_20251126_105723.nii.gz"
     # Output: Root folder where all results will be saved
     output_root = "airway_pipeline_results_weibel"
     
