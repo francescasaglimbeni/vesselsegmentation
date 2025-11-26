@@ -408,7 +408,7 @@ def save_final_segmentation(bronchi_mask, sitk_image, output_dir, input_filename
     
     return output_path
 
-
+'''
 def main():
     """Main function"""
     print("="*80)
@@ -416,7 +416,7 @@ def main():
     print("="*80)
     
     # Configuration
-    input_mask_path = "airway_segmentation/1.2.840.113704.1.111.2604.1126357612.7_airwayfull.nii.gz"
+    input_mask_path = "airway_segmentation/1.2.840.113704.1.111.256.1094901209.7_airwayfull.nii.gz"
     
     # ⚠️ INSERISCI QUI LE COORDINATE PRECISE DELLA CARINA ⚠️
     KNOWN_CARINA_COORDS = (308, 153, 197)  # Sostituisci con (z, y, x) se conosci le coordinate
@@ -506,4 +506,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main()'''
