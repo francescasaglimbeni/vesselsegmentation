@@ -1,17 +1,18 @@
-"""
-Script migliorato per la rimozione della trachea.
-Usa coordinate precise della carina per una rimozione accurata.
-MODIFICATO: Preserva una porzione significativa della trachea per evitare problemi nel cleaning
-"""
-
 import numpy as np
 import SimpleITK as sitk
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 from scipy.ndimage import label, center_of_mass, binary_erosion, binary_dilation
 from scipy.ndimage import generate_binary_structure
 import os
 import datetime
+import os
+import numpy as np
+import SimpleITK as sitk
+import matplotlib.pyplot as plt
+from skimage.morphology import skeletonize
+from scipy.ndimage import distance_transform_edt, label
+from skan import Skeleton, summarize
+import networkx as nx
 
 
 def load_airway_mask(mask_path):
@@ -29,8 +30,164 @@ def load_airway_mask(mask_path):
     
     return mask, sitk_image, spacing
 
+def compute_skeleton(mask, spacing):
+    """Computes the 3D skeleton of the mask"""
+    print("\n=== 3D Skeletonization ===")
+    
+    # Binarize the mask
+    binary_mask = (mask > 0).astype(np.uint8)
+    
+    # Apply skeletonize (works for both 2D and 3D)
+    print("Computing 3D skeleton (may take a few minutes)...")
+    skeleton = skeletonize(binary_mask)
+    
+    skeleton_voxels = np.sum(skeleton > 0)
+    print(f"Skeleton computed: {skeleton_voxels} voxels")
+    
+    # Compute distance transform for diameters
+    print("Computing distance transform for diameters...")
+    distance_transform = distance_transform_edt(binary_mask, sampling=spacing)
+    
+    return skeleton, distance_transform, skeleton_voxels
 
-def find_exact_carina_position(mask, known_carina_coords=None):
+def build_graph(skeleton, spacing):
+    """Builds graph from skeleton using skan"""
+    print("\n=== Graph Construction ===")
+    
+    if skeleton is None:
+        raise ValueError("Compute skeleton first with compute_skeleton()")
+    
+    # Create skan Skeleton object
+    # spacing in order (z, y, x) for skan
+    spacing_zyx = (spacing[2], spacing[1], spacing[0])
+    skeleton_obj = Skeleton(skeleton, spacing=spacing_zyx)
+    
+    # Extract branch information
+    branch_data = summarize(skeleton_obj)
+    
+    print(f"Number of identified branches: {len(branch_data)}")
+    print(f"Number of junctions: {skeleton_obj.n_paths}")
+    
+    # Create NetworkX graph for topological analysis
+    graph = _create_networkx_graph(skeleton_obj, branch_data)
+    
+    return graph, skeleton_obj, branch_data
+
+def _create_networkx_graph(skeleton_obj, branch_data):
+    """Creates a NetworkX graph from skeleton"""
+    G = nx.Graph()
+    
+    # Add nodes (endpoints and junction points)
+    coordinates = skeleton_obj.coordinates
+    for idx in range(len(coordinates)):
+        pos = coordinates[idx]
+        G.add_node(idx, pos=pos)
+    
+    # Add edges from branches
+    for _, row in branch_data.iterrows():
+        node1 = int(row['node-id-src'])
+        node2 = int(row['node-id-dst'])
+        length = row['branch-distance']
+        G.add_edge(node1, node2, length=length, branch_type=row['branch-type'])
+    
+    return G
+
+def identify_carina(graph, distance_transform):
+    """
+    Identifica la carina come il nodo con il diametro medio più grande tra i punti di biforcazione
+    Restituisce anche le coordinate della carina
+    """
+    print("\n=== CARINA IDENTIFICATION BY DIAMETER ===")
+    
+    if graph is None:
+        raise ValueError("Build graph first with build_graph()")
+    
+    # Trova nodi con grado >= 2 (potenziali biforcazioni)
+    candidate_nodes = [node for node in graph.nodes() 
+                    if graph.degree(node) >= 2]
+    
+    if len(candidate_nodes) == 0:
+        print("WARNING: No bifurcation nodes found!")
+        # Fallback: usa il nodo con grado più alto
+        degrees = dict(graph.degree())
+        carina_node = max(degrees, key=degrees.get)
+        carina_diameter = 0
+        carina_position = graph.nodes[carina_node]['pos']
+        node_info = []  # Initialize empty for the fallback case
+    else:
+        # Calcola diametro medio per ogni candidato
+        node_info = []
+        for node in candidate_nodes:
+            pos = graph.nodes[node]['pos']
+            z, y, x = int(pos[0]), int(pos[1]), int(pos[2])
+            
+            # Ottieni diametro alla posizione del nodo
+            if (0 <= z < distance_transform.shape[0] and
+                0 <= y < distance_transform.shape[1] and
+                0 <= x < distance_transform.shape[2]):
+                diameter = distance_transform[z, y, x] * 2
+            else:
+                diameter = 0
+            
+            # Calcola diametro medio dei rami connessi
+            connected_branches = []
+            for neighbor in graph.neighbors(node):
+                edge = tuple(sorted([node, neighbor]))
+                if 'diameter' in graph.edges[edge]:
+                    connected_branches.append(graph.edges[edge]['diameter'])
+            
+            avg_branch_diameter = np.mean(connected_branches) if connected_branches else diameter
+            
+            node_info.append({
+                'node': node,
+                'degree': graph.degree(node),
+                'diameter_at_node': diameter,
+                'avg_branch_diameter': avg_branch_diameter,
+                'z': z,
+                'y': y,
+                'x': x,
+                'position': pos
+            })
+        
+        # Ordina per diametro medio (discendente) poi per coordinata z (ascendente - superiore)
+        node_info.sort(key=lambda x: (-x['avg_branch_diameter'], x['z']))
+        
+        carina_node = node_info[0]['node']
+        carina_diameter = node_info[0]['avg_branch_diameter']
+        carina_position = node_info[0]['position']
+        
+        print(f"Carina identified: Node {carina_node}")
+        print(f"  Degree: {node_info[0]['degree']}")
+        print(f"  Average branch diameter: {node_info[0]['avg_branch_diameter']:.2f} mm")
+        print(f"  Diameter at node: {node_info[0]['diameter_at_node']:.2f} mm")
+        print(f"  Position (z,y,x): ({node_info[0]['z']}, {node_info[0]['y']:.1f}, {node_info[0]['x']:.1f})")
+        print(f"  Position (world coordinates): ({carina_position[2]:.1f}, {carina_position[1]:.1f}, {carina_position[0]:.1f})")
+    
+    # Handle fallback case where node_info might be empty
+    if len(candidate_nodes) == 0:
+        carina_info = {
+            'node_id': carina_node,
+            'position': carina_position,
+            'avg_branch_diameter': carina_diameter,
+            'diameter_at_node': 0,
+            'degree': graph.degree(carina_node),
+            'coordinates_voxel': (int(carina_position[0]), int(carina_position[1]), int(carina_position[2])),
+            'coordinates_world': (carina_position[2], carina_position[1], carina_position[0])  # x, y, z
+        }
+    else:
+        carina_info = {
+            'node_id': carina_node,
+            'position': carina_position,
+            'avg_branch_diameter': carina_diameter,
+            'diameter_at_node': node_info[0]['diameter_at_node'],
+            'degree': node_info[0]['degree'],
+            'coordinates_voxel': (node_info[0]['z'], node_info[0]['y'], node_info[0]['x']),
+            'coordinates_world': (carina_position[2], carina_position[1], carina_position[0])  # x, y, z
+        }
+
+    return carina_node, carina_diameter, carina_position, carina_info
+
+def find_exact_carina_position(mask, known_carina_coords):
     """
     Trova la posizione esatta della carina.
     Se sono fornite coordinate note, le usa direttamente.
@@ -92,7 +249,6 @@ def find_exact_carina_position(mask, known_carina_coords=None):
     print(f"  WARNING: Using fallback coordinates: z={carina_z}")
     
     return carina_z, carina_y, carina_x
-
 
 def refine_carina_with_region_growing(mask, carina_z, carina_y, carina_x, spacing):
     """
@@ -408,7 +564,7 @@ def save_final_segmentation(bronchi_mask, sitk_image, output_dir, input_filename
     
     return output_path
 
-'''
+
 def main():
     """Main function"""
     print("="*80)
@@ -416,11 +572,7 @@ def main():
     print("="*80)
     
     # Configuration
-    input_mask_path = "airway_segmentation/1.2.840.113704.1.111.256.1094901209.7_airwayfull.nii.gz"
-    
-    # ⚠️ INSERISCI QUI LE COORDINATE PRECISE DELLA CARINA ⚠️
-    KNOWN_CARINA_COORDS = (308, 153, 197)  # Sostituisci con (z, y, x) se conosci le coordinate
-    
+    input_mask_path = "airway_segmentation/1.2.840.113704.1.111.1396.1132404220.7_airwayfull.nii.gz"    
     output_dir = "precise_trachea_removal"
     final_segmentation_dir = "final_segmentations"
     os.makedirs(output_dir, exist_ok=True)
@@ -432,12 +584,10 @@ def main():
         return
     
     mask, sitk_image, spacing = load_airway_mask(input_mask_path)
-    
-    # Informazioni importanti sul sistema di coordinate
-    print(f"\n⚠️  IMPORTANT: Coordinate system information")
-    print(f"   Z-axis: 0 (bottom/feet) → {mask.shape[0]-1} (top/head)")
-    print(f"   Trachea is located at HIGHER Z values")
-    print(f"   Bronchi are located at LOWER Z values")
+    skeleton_temp = compute_skeleton(mask, spacing)
+    build_graph_temp = build_graph(skeleton_temp[0], spacing)
+    carina_temp = identify_carina(build_graph_temp[0], skeleton_temp[1])
+    KNOWN_CARINA_COORDS = carina_temp[3]['coordinates_voxel']
     
     # Trova la posizione precisa della carina
     carina_z, carina_y, carina_x = find_exact_carina_position(
@@ -506,4 +656,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()'''
+    main()
