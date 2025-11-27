@@ -414,110 +414,77 @@ class CompleteAirwayPipeline:
 
 
 def main():
-    """Main entry point with argument parsing"""
+    """Main entry point with predefined parameters"""
     
-    import argparse
+    # ============================================================
+    # CONFIGURATION PARAMETERS - MODIFY THESE AS NEEDED
+    # ============================================================
     
-    parser = argparse.ArgumentParser(
-        description="Complete Airway Analysis Pipeline",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Process single scan
-  python main_pipeline.py --input scan.mhd --output results
-  
-  # Process folder
-  python main_pipeline.py --input scans/ --output results --batch
-  
-  # Use fast segmentation
-  python main_pipeline.py --input scan.mhd --fast
-  
-  # Change trachea removal method
-  python main_pipeline.py --input scan.mhd --method adaptive
-        """
-    )
+    # Input path (file or folder)
+    INPUT_PATH = "/content/vesselsegmentation/airway_segmentation/dataset"  # Change to your MHD file or folder path
     
-    parser.add_argument(
-        '--input', '-i',
-        required=True,
-        help='Input MHD file or folder containing MHD files'
-    )
+    # Output directory
+    OUTPUT_DIR = "output_results"  # Change to your desired output directory
     
-    parser.add_argument(
-        '--output', '-o',
-        default='output',
-        help='Output root directory (default: output)'
-    )
+    # Processing mode
+    BATCH_MODE = True  # Set to True for folder processing, False for single file
     
-    parser.add_argument(
-        '--batch', '-b',
-        action='store_true',
-        help='Batch mode: process all MHD files in input folder'
-    )
+    # Trachea removal method
+    TRACHEA_REMOVAL_METHOD = 'curved'  # 'adaptive', 'curved', 'vertical', '3d_growing'
     
-    parser.add_argument(
-        '--method', '-m',
-        default='curved',
-        choices=['adaptive', 'curved', 'vertical', '3d_growing'],
-        help='Trachea removal method (default: curved)'
-    )
+    # Segmentation mode
+    FAST_SEGMENTATION = False  # Use fast mode for TotalSegmentator
     
-    parser.add_argument(
-        '--fast', '-f',
-        action='store_true',
-        help='Use fast mode for TotalSegmentator'
-    )
+    # File pattern for batch mode
+    FILE_PATTERN = "*.mhd"  # Pattern for batch processing
     
-    parser.add_argument(
-        '--pattern', '-p',
-        default='*.mhd',
-        help='File pattern for batch mode (default: *.mhd)'
-    )
-    
-    args = parser.parse_args()
+    # ============================================================
+    # PIPELINE EXECUTION
+    # ============================================================
     
     # Create pipeline
-    pipeline = CompleteAirwayPipeline(output_root=args.output)
+    pipeline = CompleteAirwayPipeline(output_root=OUTPUT_DIR)
     
     print("\n" + "="*80)
     print(" "*15 + "COMPLETE AIRWAY ANALYSIS PIPELINE")
     print("="*80)
-    print(f"\nInput: {args.input}")
-    print(f"Output: {args.output}")
-    print(f"Trachea removal method: {args.method}")
-    print(f"Fast segmentation: {args.fast}")
+    print(f"\nInput: {INPUT_PATH}")
+    print(f"Output: {OUTPUT_DIR}")
+    print(f"Trachea removal method: {TRACHEA_REMOVAL_METHOD}")
+    print(f"Fast segmentation: {FAST_SEGMENTATION}")
+    print(f"Batch mode: {BATCH_MODE}")
     
     # Process
-    if args.batch:
+    if BATCH_MODE:
         print(f"\nMode: BATCH PROCESSING")
-        print(f"Pattern: {args.pattern}")
+        print(f"Pattern: {FILE_PATTERN}")
         
-        if not os.path.isdir(args.input):
-            print(f"\n❌ Error: {args.input} is not a directory")
+        if not os.path.isdir(INPUT_PATH):
+            print(f"\n❌ Error: {INPUT_PATH} is not a directory")
             sys.exit(1)
         
         results = pipeline.process_folder(
-            args.input,
-            pattern=args.pattern,
-            trachea_removal_method=args.method,
-            fast_segmentation=args.fast
+            INPUT_PATH,
+            pattern=FILE_PATTERN,
+            trachea_removal_method=TRACHEA_REMOVAL_METHOD,
+            fast_segmentation=FAST_SEGMENTATION
         )
         
     else:
         print(f"\nMode: SINGLE SCAN")
         
-        if not os.path.exists(args.input):
-            print(f"\n❌ Error: {args.input} does not exist")
+        if not os.path.exists(INPUT_PATH):
+            print(f"\n❌ Error: {INPUT_PATH} does not exist")
             sys.exit(1)
         
-        if os.path.isdir(args.input):
-            print(f"\n❌ Error: {args.input} is a directory. Use --batch for folder processing")
+        if os.path.isdir(INPUT_PATH):
+            print(f"\n❌ Error: {INPUT_PATH} is a directory. Set BATCH_MODE=True for folder processing")
             sys.exit(1)
         
         result = pipeline.process_single_scan(
-            args.input,
-            trachea_removal_method=args.method,
-            fast_segmentation=args.fast
+            INPUT_PATH,
+            trachea_removal_method=TRACHEA_REMOVAL_METHOD,
+            fast_segmentation=FAST_SEGMENTATION
         )
         
         if result['success']:

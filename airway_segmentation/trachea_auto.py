@@ -187,6 +187,68 @@ def identify_carina(graph, distance_transform):
 
     return carina_node, carina_diameter, carina_position, carina_info
 
+def remove_upper_trachea_initial(mask, spacing):
+    """
+    NUOVA FUNZIONE: Rimuove una porzione consistente della trachea superiore
+    all'inizio del processo, indipendentemente dalla scan specifica.
+    Questo riduce il rumore mantenendo la connettività.
+    """
+    print("\n=== INITIAL UPPER TRACHEA REMOVAL ===")
+    
+    binary_mask = (mask > 0).astype(np.uint8)
+    original_voxels = np.sum(binary_mask)
+    
+    # Trova la componente connessa principale (trachea + bronchi)
+    labeled, num_objects = label(binary_mask)
+    if num_objects == 0:
+        print("  No connected components found")
+        return mask
+    
+    # Trova l'oggetto più grande
+    sizes = []
+    for obj_id in range(1, num_objects + 1):
+        size = np.sum(labeled == obj_id)
+        sizes.append(size)
+    
+    main_object = np.argmax(sizes) + 1
+    main_mask = (labeled == main_object)
+    
+    # Trova l'estensione in Z dell'oggetto principale
+    main_coords = np.argwhere(main_mask)
+    if len(main_coords) == 0:
+        print("  Main component is empty")
+        return mask
+    
+    min_z = np.min(main_coords[:, 0])
+    max_z = np.max(main_coords[:, 0])
+    height_z = max_z - min_z
+    
+    print(f"  Main component extends from z={min_z} to z={max_z} (height: {height_z} slices)")
+    
+    # CALCOLO CONSISTENTE: rimuovi il 15-20% superiore della trachea
+    # Questo è abbastanza per ridurre il rumore ma mantiene la connettività
+    remove_percentage = 0.18  # 18% - bilanciato per tutte le scan
+    slices_to_remove = int(height_z * remove_percentage)
+    
+    # Assicurati di rimuovere almeno 5 slice ma non più di 30
+    slices_to_remove = max(5, min(slices_to_remove, 30))
+    
+    cutoff_z = max_z - slices_to_remove
+    
+    print(f"  Removing upper {slices_to_remove} slices (z > {cutoff_z})")
+    
+    # Crea la maschera risultante
+    result_mask = mask.copy()
+    result_mask[cutoff_z+1:, :, :] = 0  # Rimuovi tutto SOPRA il cutoff
+    
+    remaining_voxels = np.sum(result_mask > 0)
+    removed_voxels = original_voxels - remaining_voxels
+    
+    print(f"  Removed {removed_voxels:,} voxels ({removed_voxels/original_voxels*100:.1f}%)")
+    print(f"  Remaining: {remaining_voxels:,} voxels")
+    
+    return result_mask
+
 def find_exact_carina_position(mask, known_carina_coords):
     """
     Trova la posizione esatta della carina.
@@ -296,10 +358,13 @@ def refine_carina_with_region_growing(mask, carina_z, carina_y, carina_x, spacin
 def remove_trachea_precise(mask, carina_z, carina_y, carina_x, spacing, method='adaptive'):
     """
     Rimuove la trachea in modo preciso usando diverse strategie.
-    MODIFICATO: Preserva una porzione significativa della trachea per evitare problemi nel cleaning
+    MODIFICATO: Ora riceve una maschera già pre-processata con trachea superiore rimossa
     """
     print(f"\n=== Removing trachea with {method} method ===")
     print(f"  Carina position: z={carina_z}, y={carina_y}, x={carina_x}")
+    
+    # APPLICA PRIMA LA RIMOZIONE INIZIALE DELLA TRACHEA SUPERIORE
+    mask = remove_upper_trachea_initial(mask, spacing)
     
     bronchi_mask = mask.copy()
     binary_mask = (mask > 0).astype(np.uint8)
@@ -458,6 +523,9 @@ def remove_trachea_3d_region_growing(mask, carina_z, carina_y, carina_x, spacing
     """
     print("\n=== Removing trachea with 3D region growing ===")
     
+    # APPLICA PRIMA LA RIMOZIONE INIZIALE DELLA TRACHEA SUPERIORE
+    mask = remove_upper_trachea_initial(mask, spacing)
+    
     binary_mask = (mask > 0).astype(np.uint8)
     
     # Inizia dal punto più alto della maschera (Z massimo)
@@ -577,7 +645,7 @@ def save_final_segmentation(bronchi_mask, sitk_image, output_dir, input_filename
 def main():
     """Main function"""
     print("="*80)
-    print(" "*18 + "PRECISE TRACHEA REMOVAL - PRESERVE MOST TRACHEA")
+    print(" "*18 + "PRECISE TRACHEA REMOVAL - WITH INITIAL UPPER TRACHEA REMOVAL")
     print("="*80)
     
     # Configuration
@@ -593,6 +661,13 @@ def main():
         return
     
     mask, sitk_image, spacing = load_airway_mask(input_mask_path)
+    
+    # APPLICA LA RIMOZIONE INIZIALE DELLA TRACHEA SUPERIORE
+    print("\n" + "="*80)
+    print("APPLYING INITIAL UPPER TRACHEA REMOVAL")
+    print("="*80)
+    mask = remove_upper_trachea_initial(mask, spacing)
+    
     skeleton_temp = compute_skeleton(mask, spacing)
     build_graph_temp = build_graph(skeleton_temp[0], spacing)
     carina_temp = identify_carina(build_graph_temp[0], skeleton_temp[1])
@@ -647,6 +722,7 @@ def main():
     print(" "*32 + "COMPLETED!")
     print("="*80)
     print(f"\n✓ Precise trachea removal complete!")
+    print(f"✓ ADDED: Initial upper trachea removal for consistent noise reduction")
     print(f"✓ MODIFIED: Preserved SIGNIFICANT trachea portion for robust cleaning")
     print(f"✓ This ensures branch connections won't be lost during subsequent processing")
     print(f"\nFinal carina position: (z={carina_z}, y={carina_y}, x={carina_x})")
