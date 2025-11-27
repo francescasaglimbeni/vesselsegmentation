@@ -332,23 +332,22 @@ def remove_trachea_precise(mask, carina_z, carina_y, carina_x, spacing, method='
     # MODIFICATO: Rimuovi solo la parte SUPERIORE della trachea, preservando una buona porzione
     bronchi_mask[cutoff_z:, :, :] = 0  # Rimuovi tutto SOPRA il cutoff
     
-    # AGGIUNTA: Preserva attivamente una porzione significativa della trachea sopra la carina
-    preserved_trachea_height = 50  # Altezza significativa della trachea da preservare (in slice)
-    trachea_start_z = max(0, carina_z - preserved_trachea_height)
-    
-    # Ricostruisci la porzione tracheale preservata sopra la carina
-    for z in range(trachea_start_z, carina_z + 1):
-        if z < cutoff_z:  # Solo se non è già stato rimosso
-            # Trova la componente tracheale in questo slice
-            slice_2d = binary_mask[z, :, :]
-            if np.sum(slice_2d) > 0:
-                labeled, num_objects = label(slice_2d)
-                if num_objects > 0:
-                    # Per slice sopra la carina, preserva TUTTE le componenti connesse
-                    # per mantenere l'integrità strutturale
-                    bronchi_mask[z, :, :] = mask[z, :, :]  # Preserva tutto lo slice
-    
-    # AGGIUNTA: Dilatazione per garantire la connettività
+    # PRESERVA SOLO UNA PICCOLA ANCORAGGIO ATTORNO ALLA CARINA
+    # Manteniamo una piccola cubetta 3x3x3 centrata sulla carina per garantire l'aggancio
+    preserved_radius = 1  # pochi voxel (raggio)
+    z0 = max(0, carina_z - preserved_radius)
+    z1 = min(mask.shape[0], carina_z + preserved_radius + 1)
+    y0 = max(0, carina_y - preserved_radius)
+    y1 = min(mask.shape[1], carina_y + preserved_radius + 1)
+    x0 = max(0, carina_x - preserved_radius)
+    x1 = min(mask.shape[2], carina_x + preserved_radius + 1)
+
+    # Intersezione con la maschera originale per preservare solo i voxel effettivi
+    bronchi_mask[z0:z1, y0:y1, x0:x1] = (
+        mask[z0:z1, y0:y1, x0:x1] * ((mask[z0:z1, y0:y1, x0:x1] > 0).astype(mask.dtype))
+    )
+
+    # Dilatazione/erosione minima per mantenere connettività senza allargare troppo
     structure = generate_binary_structure(3, 1)  # Connettività 6-vicinato
     bronchi_mask_binary = (bronchi_mask > 0).astype(np.uint8)
     bronchi_mask_binary = binary_dilation(bronchi_mask_binary, structure=structure, iterations=1)
@@ -364,7 +363,6 @@ def remove_trachea_precise(mask, carina_z, carina_y, carina_x, spacing, method='
     print(f"    Original: {original_voxels:,}")
     print(f"    Remaining: {remaining_voxels:,}")
     print(f"    Removed: {removed_voxels:,} ({removed_voxels/original_voxels*100:.1f}%)")
-    print(f"    Preserved trachea: {preserved_trachea_height} slices above carina")
     print(f"    Final cutoff: {cutoff_z} (removes only upper trachea)")
     
     return bronchi_mask, cutoff_z
@@ -469,21 +467,32 @@ def remove_trachea_3d_region_growing(mask, carina_z, carina_y, carina_x, spacing
             start_z = z
             break
     
-    # MODIFICATO: Punto di partenza molto più alto per preservare quasi tutta la trachea
-    seed_point = (start_z - 25, carina_y, carina_x)  # MOLTO più alto
-    
-    # MODIFICATO: Rimuovi solo la parte SUPERIORE della trachea
-    preserved_trachea_height = 20  # Preserva MOLTA trachea
-    trachea_start_z = min(binary_mask.shape[0], carina_z + preserved_trachea_height)
-    
-    # Crea maschera finale che preserva quasi tutta la trachea
+    # MODIFICATO: punto di partenza (non usato direttamente qui)
+    seed_point = (max(0, start_z - 5), carina_y, carina_x)
+
+    # Rimuovi la parte superiore della trachea preservando solo un piccolo aggancio
+    preserved_radius = 1  # pochi voxel attorno alla carina
+    trachea_start_z = min(binary_mask.shape[0], carina_z + preserved_radius)
+
+    # Crea maschera finale che rimuove la parte superiore tranne il piccolo aggancio
     bronchi_mask = binary_mask.copy()
-    bronchi_mask[trachea_start_z:, :, :] = 0  # Rimuovi solo la parte superiore
-    
-    # AGGIUNTA: Dilatazione per garantire la connettività
-    structure = generate_binary_structure(3, 1)  # Connettività 6-vicinato
-    bronchi_mask = binary_dilation(bronchi_mask, structure=structure, iterations=2)
-    bronchi_mask = binary_erosion(bronchi_mask, structure=structure, iterations=2)
+    bronchi_mask[trachea_start_z:, :, :] = 0  # Rimuovi tutto sopra trachea_start_z
+
+    # Assicura preservazione di una piccola cubetta attorno alla carina (3x3x3)
+    z0 = max(0, carina_z - preserved_radius)
+    z1 = min(binary_mask.shape[0], carina_z + preserved_radius + 1)
+    y0 = max(0, carina_y - preserved_radius)
+    y1 = min(binary_mask.shape[1], carina_y + preserved_radius + 1)
+    x0 = max(0, carina_x - preserved_radius)
+    x1 = min(binary_mask.shape[2], carina_x + preserved_radius + 1)
+    bronchi_mask[z0:z1, y0:y1, x0:x1] = (
+        binary_mask[z0:z1, y0:y1, x0:x1] * ((binary_mask[z0:z1, y0:y1, x0:x1] > 0).astype(np.uint8))
+    )
+
+    # Minima morfologia per evitare ampliamenti significativi
+    structure = generate_binary_structure(3, 1)
+    bronchi_mask = binary_dilation(bronchi_mask, structure=structure, iterations=1)
+    bronchi_mask = binary_erosion(bronchi_mask, structure=structure, iterations=1)
     
     # Converti al tipo originale
     bronchi_mask = bronchi_mask.astype(mask.dtype) * np.max(mask)
