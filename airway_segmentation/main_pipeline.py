@@ -4,15 +4,10 @@ import numpy as np
 import datetime
 from pathlib import Path
 import SimpleITK as sitk
+from test_robust import RobustCarinaDetector
 
 # Import from existing modules
 from airwais_seg import segment_airwayfull_from_mhd
-from trachea_auto import (
-    load_airway_mask, compute_skeleton, build_graph, 
-    identify_carina, find_exact_carina_position,
-    refine_carina_with_region_growing, remove_trachea_precise,
-    visualize_precise_removal, save_final_segmentation
-)
 from preprocessin_cleaning import SegmentationPreprocessor
 from airway_graph import AirwayGraphAnalyzer
 
@@ -103,35 +98,27 @@ class CompleteAirwayPipeline:
             print("="*80)
             print(f"Using method: {trachea_removal_method}")
             
-            # Load mask
-            mask, sitk_image, spacing = load_airway_mask(airway_path)
-            
-            # Compute preliminary skeleton for carina detection
-            skeleton_temp, distance_transform, _ = compute_skeleton(mask, spacing)
-            graph_temp, skeleton_obj, branch_data = build_graph(skeleton_temp, spacing)
-            
-            # Identify carina
-            carina_node, carina_diameter, carina_position, carina_info = identify_carina(
-                graph_temp, distance_transform
-            )
-            
-            known_carina_coords = carina_info['coordinates_voxel']
-            
-            # Find exact carina position
-            carina_z, carina_y, carina_x = find_exact_carina_position(
-                mask, known_carina_coords
-            )
-            
-            # Refine with region growing
-            carina_z, carina_y, carina_x = refine_carina_with_region_growing(
-                mask, carina_z, carina_y, carina_x, spacing
-            )
-            
-            # Remove trachea
-            bronchi_mask, cutoff_z = remove_trachea_precise(
-                mask, carina_z, carina_y, carina_x, spacing, 
-                method=trachea_removal_method
-            )
+            # Load mask using SimpleITK (replaces load_airway_mask from trachea_auto)
+            sitk_image = sitk.ReadImage(airway_path)
+            mask = sitk.GetArrayFromImage(sitk_image)
+            spacing = sitk_image.GetSpacing()
+
+            # Use RobustCarinaDetector from test_robust to detect carina and remove trachea
+            detector = RobustCarinaDetector(mask, spacing, verbose=True)
+            carina_z, carina_y, carina_x, confidence = detector.detect_carina_robust()
+
+            # Map trachea_removal_method to an example safety margin (mm)
+            # You can tune these values or expose as parameter to process_single_scan
+            method_margin_map = {
+                'adaptive': 3,
+                'curved': 5,
+                'vertical': 7,
+                '3d_growing': 10
+            }
+            safety_margin_mm = method_margin_map.get(trachea_removal_method, 5)
+
+            # Remove trachea using the detector's remove_trachea
+            bronchi_mask, cutoff_z = detector.remove_trachea(safety_margin_mm=safety_margin_mm)
             
             # Save result
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -413,8 +413,7 @@ class AirwayGraphAnalyzer:
                     'position': pos
                 })
             
-            # Ordina per diametro medio (discendente) poi per coordinata z (ascendente - superiore)
-            node_info.sort(key=lambda x: (-x['avg_branch_diameter'], x['z']))
+            node_info.sort(key=lambda x: (-x['avg_branch_diameter'], -x['z']))
             
             self.carina_node = node_info[0]['node']
             carina_diameter = node_info[0]['avg_branch_diameter']
