@@ -16,7 +16,7 @@ class CompleteAirwayPipeline:
     """
     Complete end-to-end airway analysis pipeline:
     1. Segmentation from MHD (TotalSegmentator)
-    2. Trachea removal (preserving bronchi)
+    2. Trachea removal (preserving bronchi and carina)
     3. Preprocessing with component reconnection
     4. Skeletonization and graph construction
     5. Weibel generation analysis
@@ -28,7 +28,6 @@ class CompleteAirwayPipeline:
         os.makedirs(output_root, exist_ok=True)
         
     def process_single_scan(self, mhd_path, scan_name=None, 
-                           trachea_removal_method='curved',
                            fast_segmentation=False):
         """
         Process a single MHD scan through the complete pipeline
@@ -36,8 +35,6 @@ class CompleteAirwayPipeline:
         Args:
             mhd_path: Path to .mhd file
             scan_name: Optional name for the scan (defaults to filename)
-            trachea_removal_method: Method for trachea removal 
-                                   ('adaptive', 'curved', 'vertical', '3d_growing')
             fast_segmentation: Use fast mode for TotalSegmentator
         
         Returns:
@@ -91,38 +88,31 @@ class CompleteAirwayPipeline:
             print(f"\n✓ Segmentation complete: {airway_path}")
             
             # ============================================================
-            # STEP 2: TRACHEA REMOVAL
+            # STEP 2: TRACHEA REMOVAL (NEW METHOD)
             # ============================================================
             print("\n" + "="*80)
-            print("STEP 2: TRACHEA REMOVAL")
+            print("STEP 2: INTELLIGENT TRACHEA REMOVAL")
             print("="*80)
-            print(f"Using method: {trachea_removal_method}")
+            print("Using adaptive trachea tracing method")
+            print("Strategy: Detect carina → Trace trachea → Remove upper 50%")
             
-            # Load mask using SimpleITK (replaces load_airway_mask from trachea_auto)
+            # Load mask using SimpleITK
             sitk_image = sitk.ReadImage(airway_path)
             mask = sitk.GetArrayFromImage(sitk_image)
             spacing = sitk_image.GetSpacing()
 
-            # Use RobustCarinaDetector from test_robust to detect carina and remove trachea
+            # Use RobustCarinaDetector with new trachea tracing method
             detector = RobustCarinaDetector(mask, spacing, verbose=True)
+            
+            # Detect carina
             carina_z, carina_y, carina_x, confidence = detector.detect_carina_robust()
 
-            # Map trachea_removal_method to an example safety margin (mm)
-            # You can tune these values or expose as parameter to process_single_scan
-            method_margin_map = {
-                'adaptive': 3,
-                'curved': 5,
-                'vertical': 7,
-                '3d_growing': 10
-            }
-            safety_margin_mm = method_margin_map.get(trachea_removal_method, 5)
-
-            # Remove trachea using the detector's remove_trachea
-            bronchi_mask, cutoff_z = detector.remove_trachea(safety_margin_mm=safety_margin_mm)
+            # Remove trachea using new method (removes only upper 50% of trachea)
+            bronchi_mask, cutoff_z = detector.remove_trachea()
             
             # Save result
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            bronchi_filename = f"{scan_name}_bronchi_{trachea_removal_method}_{timestamp}.nii.gz"
+            bronchi_filename = f"{scan_name}_bronchi_adaptive_{timestamp}.nii.gz"
             bronchi_path = os.path.join(step2_dir, bronchi_filename)
             
             bronchi_sitk = sitk.GetImageFromArray(bronchi_mask.astype(np.uint8))
@@ -135,9 +125,22 @@ class CompleteAirwayPipeline:
                 'y': int(carina_y),
                 'x': int(carina_x)
             }
+            results['trachea_info'] = {
+                'cutoff_z': int(cutoff_z),
+                'trachea_top_z': int(detector.trachea_top_z) if detector.trachea_top_z else None,
+                'trachea_length_slices': int(detector.trachea_length) if detector.trachea_length else None,
+                'trachea_length_mm': float(detector.trachea_length * spacing[2]) if detector.trachea_length else None,
+                'detection_method': detector.detection_method,
+                'confidence': float(confidence)
+            }
             
             print(f"\n✓ Trachea removed: {bronchi_path}")
-            print(f"  Carina at: (z={carina_z}, y={carina_y}, x={carina_x})")
+            print(f"  Carina: (z={carina_z}, y={carina_y}, x={carina_x})")
+            print(f"  Confidence: {confidence:.2f}/5.0")
+            print(f"  Method: {detector.detection_method}")
+            if detector.trachea_length:
+                print(f"  Trachea length: {detector.trachea_length} slices ({detector.trachea_length * spacing[2]:.1f} mm)")
+            print(f"  Cutoff: z={cutoff_z}")
             
             # ============================================================
             # STEP 3: PREPROCESSING WITH COMPONENT RECONNECTION
@@ -198,7 +201,6 @@ class CompleteAirwayPipeline:
         return results
     
     def process_folder(self, folder_path, pattern="*.mhd", 
-                      trachea_removal_method='curved',
                       fast_segmentation=False):
         """
         Process all MHD files in a folder
@@ -206,7 +208,6 @@ class CompleteAirwayPipeline:
         Args:
             folder_path: Path to folder containing MHD files
             pattern: File pattern to match (default: "*.mhd")
-            trachea_removal_method: Method for trachea removal
             fast_segmentation: Use fast mode for TotalSegmentator
         
         Returns:
@@ -239,7 +240,6 @@ class CompleteAirwayPipeline:
             result = self.process_single_scan(
                 str(mhd_file),
                 scan_name=scan_name,
-                trachea_removal_method=trachea_removal_method,
                 fast_segmentation=fast_segmentation
             )
             
@@ -271,11 +271,23 @@ class CompleteAirwayPipeline:
             f.write("1. ✓ Segmentation (TotalSegmentator)\n")
             f.write(f"   Output: {results.get('airway_segmentation', 'N/A')}\n\n")
             
-            f.write("2. ✓ Trachea Removal\n")
+            f.write("2. ✓ Intelligent Trachea Removal\n")
             f.write(f"   Output: {results.get('bronchi_mask', 'N/A')}\n")
+            f.write(f"   Method: Adaptive trachea tracing (upper 50% removal)\n")
+            
             if 'carina_coordinates' in results:
                 carina = results['carina_coordinates']
-                f.write(f"   Carina: (z={carina['z']}, y={carina['y']}, x={carina['x']})\n\n")
+                f.write(f"   Carina: (z={carina['z']}, y={carina['y']}, x={carina['x']})\n")
+            
+            if 'trachea_info' in results:
+                trachea = results['trachea_info']
+                f.write(f"   Detection method: {trachea.get('detection_method', 'N/A')}\n")
+                f.write(f"   Confidence: {trachea.get('confidence', 0):.2f}/5.0\n")
+                if trachea.get('trachea_length_mm'):
+                    f.write(f"   Trachea length: {trachea['trachea_length_mm']:.1f} mm "
+                           f"({trachea['trachea_length_slices']} slices)\n")
+                f.write(f"   Cutoff z: {trachea.get('cutoff_z', 'N/A')}\n")
+            f.write("\n")
             
             f.write("3. ✓ Preprocessing & Component Reconnection\n")
             f.write(f"   Output: {results.get('cleaned_mask', 'N/A')}\n\n")
@@ -348,7 +360,7 @@ class CompleteAirwayPipeline:
             
             f.write("Key files:\n")
             f.write(f"  • step1_segmentation/          - Initial airway segmentation\n")
-            f.write(f"  • step2_trachea_removal/       - Bronchi-only mask\n")
+            f.write(f"  • step2_trachea_removal/       - Bronchi-only mask (carina preserved)\n")
             f.write(f"  • step3_preprocessing/         - Cleaned and reconnected mask\n")
             f.write(f"  • step4_analysis/              - Complete analysis results\n")
             f.write(f"    - branch_metrics_complete.csv\n")
@@ -359,6 +371,15 @@ class CompleteAirwayPipeline:
             f.write(f"    - Multiple visualization PNG files\n")
             
             f.write("\n" + "="*80 + "\n")
+            f.write("NOTES\n")
+            f.write("="*80 + "\n\n")
+            f.write("Trachea removal strategy:\n")
+            f.write("  1. Carina detection using multi-method voting\n")
+            f.write("  2. Trachea tracing upward from carina\n")
+            f.write("  3. Removal of upper 50% of trachea only\n")
+            f.write("  4. Preservation of carina and all bronchial branches\n\n")
+            
+            f.write("="*80 + "\n")
         
         print(f"\n📄 Summary report saved: {report_path}")
     
@@ -386,7 +407,12 @@ class CompleteAirwayPipeline:
             
             for result in successful:
                 f.write(f"✓ {result['scan_name']}\n")
-                f.write(f"  Output: {result['output_dir']}\n\n")
+                f.write(f"  Output: {result['output_dir']}\n")
+                if 'trachea_info' in result:
+                    trachea = result['trachea_info']
+                    f.write(f"  Carina confidence: {trachea.get('confidence', 0):.2f}/5.0\n")
+                    f.write(f"  Method: {trachea.get('detection_method', 'N/A')}\n")
+                f.write("\n")
             
             if failed:
                 f.write("="*80 + "\n")
@@ -396,6 +422,15 @@ class CompleteAirwayPipeline:
                 for result in failed:
                     f.write(f"❌ {result['scan_name']}\n")
                     f.write(f"  Error: {result['error']}\n\n")
+            
+            f.write("="*80 + "\n")
+            f.write("METHOD INFORMATION\n")
+            f.write("="*80 + "\n\n")
+            f.write("Trachea removal: Adaptive tracing method\n")
+            f.write("  - Detects carina position\n")
+            f.write("  - Traces trachea upward from carina\n")
+            f.write("  - Removes only upper 50% of trachea\n")
+            f.write("  - Preserves carina and all bronchial branches\n\n")
         
         print(f"\n📄 Batch summary saved: {report_path}")
 
@@ -408,22 +443,19 @@ def main():
     # ============================================================
     
     # Input path (file or folder)
-    INPUT_PATH = "/content/vesselsegmentation/airway_segmentation/dataset"  # Change to your MHD file or folder path
+    INPUT_PATH = "/content/vesselsegmentation/airway_segmentation/dataset"
     
     # Output directory
-    OUTPUT_DIR = "output_results"  # Change to your desired output directory
+    OUTPUT_DIR = "output_results"
     
     # Processing mode
     BATCH_MODE = True  # Set to True for folder processing, False for single file
-    
-    # Trachea removal method
-    TRACHEA_REMOVAL_METHOD = 'curved'  # 'adaptive', 'curved', 'vertical', '3d_growing'
     
     # Segmentation mode
     FAST_SEGMENTATION = False  # Use fast mode for TotalSegmentator
     
     # File pattern for batch mode
-    FILE_PATTERN = "*.mhd"  # Pattern for batch processing
+    FILE_PATTERN = "*.mhd"
     
     # ============================================================
     # PIPELINE EXECUTION
@@ -437,7 +469,7 @@ def main():
     print("="*80)
     print(f"\nInput: {INPUT_PATH}")
     print(f"Output: {OUTPUT_DIR}")
-    print(f"Trachea removal method: {TRACHEA_REMOVAL_METHOD}")
+    print(f"Trachea removal: Adaptive tracing (upper 50% removal)")
     print(f"Fast segmentation: {FAST_SEGMENTATION}")
     print(f"Batch mode: {BATCH_MODE}")
     
@@ -453,9 +485,19 @@ def main():
         results = pipeline.process_folder(
             INPUT_PATH,
             pattern=FILE_PATTERN,
-            trachea_removal_method=TRACHEA_REMOVAL_METHOD,
             fast_segmentation=FAST_SEGMENTATION
         )
+        
+        # Print summary
+        successful = [r for r in results if r['success']]
+        failed = [r for r in results if not r['success']]
+        
+        print("\n" + "="*80)
+        print(" "*25 + "BATCH PROCESSING COMPLETE")
+        print("="*80)
+        print(f"\nTotal scans: {len(results)}")
+        print(f"✓ Successful: {len(successful)}")
+        print(f"❌ Failed: {len(failed)}")
         
     else:
         print(f"\nMode: SINGLE SCAN")
@@ -470,7 +512,6 @@ def main():
         
         result = pipeline.process_single_scan(
             INPUT_PATH,
-            trachea_removal_method=TRACHEA_REMOVAL_METHOD,
             fast_segmentation=FAST_SEGMENTATION
         )
         
@@ -480,6 +521,14 @@ def main():
             print("="*80)
             print(f"\n✓ Analysis complete for {result['scan_name']}")
             print(f"\n📁 Results saved in: {result['output_dir']}")
+            
+            if 'trachea_info' in result:
+                trachea = result['trachea_info']
+                print(f"\nTrachea removal details:")
+                print(f"  Method: {trachea.get('detection_method', 'N/A')}")
+                print(f"  Confidence: {trachea.get('confidence', 0):.2f}/5.0")
+                if trachea.get('trachea_length_mm'):
+                    print(f"  Trachea length: {trachea['trachea_length_mm']:.1f} mm")
         else:
             print("\n" + "="*80)
             print(" "*30 + "FAILED!")

@@ -10,10 +10,8 @@ from collections import defaultdict
 
 class RobustCarinaDetector:
     """
-    Sistema robusto per la detection della carina che gestisce:
-    - Rumore nella parte superiore della trachea
-    - Variabilità anatomica tra scans
-    - Artefatti di segmentazione
+    Sistema robusto per la detection della carina con rimozione selettiva della trachea
+    Preserva carina e bronchi, rimuove solo il 50% superiore del tronco tracheale
     """
     
     def __init__(self, mask, spacing, verbose=True):
@@ -34,44 +32,41 @@ class RobustCarinaDetector:
         self.carina_x = None
         self.confidence_score = 0.0
         self.detection_method = None
+        self.trachea_top_z = None
+        self.trachea_length = None
         
     def detect_carina_robust(self):
         """
         Detection robusta della carina usando approccio multi-metodo
-        con voting e validazione
         """
         if self.verbose:
             print("\n" + "="*70)
             print(" "*20 + "ROBUST CARINA DETECTION")
             print("="*70)
         
-        # STEP 1: Pre-processing aggressivo per rimuovere rumore superiore
-        self._aggressive_upper_cleaning()
+        # STEP 1: Pre-processing conservativo
+        self._adaptive_upper_cleaning()
         
         # STEP 2: Applica multipli metodi di detection
         candidates = []
         
-        # Metodo 1: Analisi componenti connesse (più robusto)
         carina_cc = self._detect_by_connected_components()
         if carina_cc is not None:
-            candidates.append(('connected_components', carina_cc, 3.0))  # peso alto
+            candidates.append(('connected_components', carina_cc, 3.0))
         
-        # Metodo 2: Analisi diametro su skeleton
         carina_diameter = self._detect_by_diameter_analysis()
         if carina_diameter is not None:
             candidates.append(('diameter', carina_diameter, 2.0))
         
-        # Metodo 3: Analisi biforcazione topologica
         carina_topo = self._detect_by_topology()
         if carina_topo is not None:
             candidates.append(('topology', carina_topo, 2.5))
         
-        # Metodo 4: Analisi slice-by-slice (fallback robusto)
         carina_slice = self._detect_by_slice_analysis()
         if carina_slice is not None:
             candidates.append(('slice_analysis', carina_slice, 1.5))
         
-        # STEP 3: Voting e selezione del miglior candidato
+        # STEP 3: Voting e selezione
         if not candidates:
             if self.verbose:
                 print("\n⚠ WARNING: No candidates found, using fallback")
@@ -91,28 +86,24 @@ class RobustCarinaDetector:
         
         return self.carina_z, self.carina_y, self.carina_x, self.confidence_score
     
-    def _aggressive_upper_cleaning(self):
+    def _adaptive_upper_cleaning(self):
         """
-        Pulizia aggressiva della parte superiore per rimuovere rumore
-        che potrebbe confondere la detection
+        Pulizia conservativa della parte superiore
         """
         if self.verbose:
-            print("\nStep 1: Aggressive upper cleaning...")
+            print("\nStep 1: Adaptive conservative cleaning...")
         
         binary_mask = (self.mask > 0).astype(np.uint8)
         
-        # Trova componente principale
         labeled, num_objects = label(binary_mask)
         if num_objects == 0:
             self.cleaned_mask = self.mask
             return
         
-        # Prendi solo la componente più grande
         sizes = [np.sum(labeled == i) for i in range(1, num_objects + 1)]
         main_component = np.argmax(sizes) + 1
         main_mask = (labeled == main_component)
         
-        # Trova estensione in Z
         main_coords = np.argwhere(main_mask)
         if len(main_coords) == 0:
             self.cleaned_mask = self.mask
@@ -121,11 +112,45 @@ class RobustCarinaDetector:
         min_z, max_z = np.min(main_coords[:, 0]), np.max(main_coords[:, 0])
         height = max_z - min_z
         
-        # RIMOZIONE AGGRESSIVA: rimuovi top 35% (più del 18% precedente)
-        remove_slices = int(height * 0.35)
-        remove_slices = max(10, min(remove_slices, 40))  # tra 10 e 40 slices
+        # Analisi morfologica
+        slice_areas = []
+        slice_indices = []
         
-        cutoff = max_z - remove_slices
+        for z in range(max_z, min_z, -1):
+            slice_2d = main_mask[z, :, :]
+            area = np.sum(slice_2d)
+            if area > 0:
+                slice_areas.append(area)
+                slice_indices.append(z)
+        
+        if len(slice_areas) < 10:
+            self.cleaned_mask = self.mask
+            return
+        
+        # Cerca stabilizzazione
+        window = 5
+        areas_smooth = np.convolve(slice_areas, np.ones(window)/window, mode='valid')
+        
+        cutoff_idx = 0
+        if len(areas_smooth) > 10:
+            derivatives = np.abs(np.diff(areas_smooth))
+            stable_region_size = min(20, len(derivatives) // 3)
+            stable_derivative = np.mean(derivatives[-stable_region_size:])
+            threshold = stable_derivative * 3
+            
+            for i, deriv in enumerate(derivatives):
+                if deriv < threshold:
+                    cutoff_idx = i
+                    break
+        
+        if cutoff_idx == 0:
+            remove_slices = int(height * 0.10)
+            remove_slices = max(3, min(remove_slices, 15))
+        else:
+            remove_slices = cutoff_idx + 2
+            remove_slices = min(remove_slices, int(height * 0.20))
+        
+        cutoff = slice_indices[min(remove_slices, len(slice_indices)-1)]
         
         cleaned = self.mask.copy()
         cleaned[cutoff:, :, :] = 0
@@ -134,31 +159,30 @@ class RobustCarinaDetector:
         
         if self.verbose:
             removed_voxels = np.sum(self.mask > 0) - np.sum(cleaned > 0)
-            print(f"  Removed {remove_slices} upper slices (z > {cutoff})")
-            print(f"  Removed {removed_voxels:,} voxels ({removed_voxels/np.sum(self.mask>0)*100:.1f}%)")
+            print(f"  Removed: {remove_slices} upper slices (z > {cutoff})")
+            print(f"  Removed voxels: {removed_voxels:,} ({removed_voxels/np.sum(self.mask>0)*100:.1f}%)")
     
     def _detect_by_connected_components(self):
         """
-        Metodo 1: Detection basata su analisi componenti connesse
-        Cerca lo slice dove compaiono 2+ componenti separate di dimensioni simili
+        Detection basata su componenti connesse
         """
         if self.verbose:
             print("\nMethod 1: Connected components analysis...")
         
         binary_mask = (self.cleaned_mask > 0).astype(np.uint8)
-        
-        # Cerca dal basso verso l'alto (dalla periferia verso il centro)
         candidates = []
         
-        for z in range(binary_mask.shape[0] - 1, max(0, binary_mask.shape[0] - 100), -1):
+        z_start = binary_mask.shape[0] - 1
+        z_min = max(0, int(binary_mask.shape[0] * 0.2))
+        
+        for z in range(z_start, z_min, -1):
             slice_2d = binary_mask[z, :, :]
-            if np.sum(slice_2d) < 100:  # troppo piccolo
+            if np.sum(slice_2d) < 50:
                 continue
             
             labeled, num_objects = label(slice_2d)
             
             if num_objects >= 2:
-                # Analizza dimensioni degli oggetti
                 sizes = []
                 centroids = []
                 for obj_id in range(1, num_objects + 1):
@@ -167,23 +191,15 @@ class RobustCarinaDetector:
                     sizes.append(size)
                     centroids.append(center_of_mass(obj_mask))
                 
-                # Ordina per dimensione
                 sorted_indices = np.argsort(sizes)[::-1]
                 
                 if len(sizes) >= 2:
                     size1, size2 = sizes[sorted_indices[0]], sizes[sorted_indices[1]]
-                    
-                    # Check: i due oggetti principali sono di dimensioni simili?
                     size_ratio = size2 / size1 if size1 > 0 else 0
                     
-                    # Score basato su:
-                    # 1. Rapporto dimensioni (ideale: 0.5-1.0)
-                    # 2. Dimensione assoluta degli oggetti
-                    # 3. Numero di oggetti (2 è ideale)
-                    
-                    if size_ratio > 0.2:  # almeno 20% della dimensione principale
-                        score = size_ratio * (1.0 if num_objects == 2 else 0.7)
-                        score *= min(1.0, (size1 + size2) / 1000)  # bonus per oggetti grandi
+                    if size_ratio > 0.15:
+                        score = size_ratio * (1.0 if num_objects == 2 else 0.8)
+                        score *= min(1.0, (size1 + size2) / 800)
                         
                         cent1 = centroids[sorted_indices[0]]
                         cent2 = centroids[sorted_indices[1]]
@@ -204,49 +220,48 @@ class RobustCarinaDetector:
                 print("  No valid candidates found")
             return None
         
-        # Seleziona il candidato con score più alto
-        best = max(candidates, key=lambda x: x['score'])
+        good_candidates = [c for c in candidates if c['score'] > 0.3]
+        if good_candidates:
+            best = max(good_candidates, key=lambda x: x['z'])
+        else:
+            best = max(candidates, key=lambda x: x['score'])
         
         if self.verbose:
-            print(f"  Found {len(candidates)} candidates")
-            print(f"  Best: z={best['z']}, score={best['score']:.3f}, "
-                  f"objects={best['num_objects']}, ratio={best['size_ratio']:.3f}")
+            print(f"  Best: z={best['z']}, score={best['score']:.3f}")
         
         return (best['z'], best['y'], best['x'])
     
     def _detect_by_diameter_analysis(self):
         """
-        Metodo 2: Detection basata su analisi diametro lungo skeleton
-        Cerca il punto con diametro massimo che sia anche una biforcazione
+        Detection basata su diametro
         """
         if self.verbose:
-            print("\nMethod 2: Diameter analysis on skeleton...")
+            print("\nMethod 2: Diameter analysis...")
         
         try:
             binary_mask = (self.cleaned_mask > 0).astype(np.uint8)
-            
-            # Compute skeleton
             skeleton = skeletonize(binary_mask)
             if np.sum(skeleton) < 10:
                 return None
             
-            # Distance transform
             spacing_zyx = (self.spacing[2], self.spacing[1], self.spacing[0])
             distance_transform = distance_transform_edt(binary_mask, sampling=spacing_zyx)
             
-            # Build graph
             skeleton_obj = Skeleton(skeleton, spacing=spacing_zyx)
             coordinates = skeleton_obj.coordinates
             
             if len(coordinates) == 0:
                 return None
             
-            # Analizza nodi con diametro alto E grado >= 3 (biforcazioni)
             candidates = []
+            z_threshold = binary_mask.shape[0] * 0.4
             
             for idx in range(len(coordinates)):
                 pos = coordinates[idx]
                 z, y, x = int(pos[0]), int(pos[1]), int(pos[2])
+                
+                if z < z_threshold:
+                    continue
                 
                 if not (0 <= z < distance_transform.shape[0] and
                        0 <= y < distance_transform.shape[1] and
@@ -255,31 +270,20 @@ class RobustCarinaDetector:
                 
                 diameter = distance_transform[z, y, x] * 2
                 
-                # Score basato su diametro e posizione
-                # Preferisci posizioni centrali (non troppo in alto o basso)
-                z_score = 1.0 - abs(z - binary_mask.shape[0] * 0.6) / (binary_mask.shape[0] * 0.4)
-                z_score = max(0.0, z_score)
-                
-                score = diameter * (0.5 + 0.5 * z_score)
-                
                 candidates.append({
                     'z': z,
                     'y': y,
                     'x': x,
                     'diameter': diameter,
-                    'score': score
+                    'score': diameter
                 })
             
             if not candidates:
                 return None
             
-            # Prendi top 5% per diametro
             candidates.sort(key=lambda x: x['score'], reverse=True)
-            top_candidates = candidates[:max(1, len(candidates) // 20)]
-            
-            # Tra questi, scegli quello più centrale
-            best = min(top_candidates, 
-                      key=lambda x: abs(x['z'] - binary_mask.shape[0] * 0.6))
+            top_candidates = candidates[:max(5, len(candidates) // 10)]
+            best = max(top_candidates, key=lambda x: x['z'])
             
             if self.verbose:
                 print(f"  Best: z={best['z']}, diameter={best['diameter']:.2f}mm")
@@ -288,26 +292,22 @@ class RobustCarinaDetector:
             
         except Exception as e:
             if self.verbose:
-                print(f"  Error in diameter analysis: {e}")
+                print(f"  Error: {e}")
             return None
     
     def _detect_by_topology(self):
         """
-        Metodo 3: Detection basata su analisi topologica del grafo
-        Cerca il nodo con massimo betweenness centrality (punto centrale)
+        Detection basata su topologia
         """
         if self.verbose:
             print("\nMethod 3: Topology analysis...")
         
         try:
             binary_mask = (self.cleaned_mask > 0).astype(np.uint8)
-            
-            # Compute skeleton
             skeleton = skeletonize(binary_mask)
             if np.sum(skeleton) < 10:
                 return None
             
-            # Build graph
             spacing_zyx = (self.spacing[2], self.spacing[1], self.spacing[0])
             skeleton_obj = Skeleton(skeleton, spacing=spacing_zyx)
             branch_data = summarize(skeleton_obj)
@@ -315,12 +315,10 @@ class RobustCarinaDetector:
             G = nx.Graph()
             coordinates = skeleton_obj.coordinates
             
-            # Add nodes
             for idx in range(len(coordinates)):
                 pos = coordinates[idx]
                 G.add_node(idx, pos=pos)
             
-            # Add edges
             for _, row in branch_data.iterrows():
                 node1 = int(row['node-id-src'])
                 node2 = int(row['node-id-dst'])
@@ -330,23 +328,34 @@ class RobustCarinaDetector:
             if len(G.nodes()) < 3:
                 return None
             
-            # Calcola betweenness centrality (indica punto centrale)
             try:
                 centrality = nx.betweenness_centrality(G, weight='length')
             except:
                 return None
             
-            # Filtra solo nodi con grado >= 3 (biforcazioni)
-            bifurcation_nodes = [n for n in G.nodes() if G.degree(n) >= 3]
+            z_threshold = binary_mask.shape[0] * 0.4
+            bifurcation_nodes = []
+            
+            for n in G.nodes():
+                if G.degree(n) >= 3:
+                    pos = G.nodes[n]['pos']
+                    if pos[0] >= z_threshold:
+                        bifurcation_nodes.append(n)
             
             if not bifurcation_nodes:
-                bifurcation_nodes = [n for n in G.nodes() if G.degree(n) >= 2]
+                for n in G.nodes():
+                    if G.degree(n) >= 2:
+                        pos = G.nodes[n]['pos']
+                        if pos[0] >= z_threshold:
+                            bifurcation_nodes.append(n)
             
             if not bifurcation_nodes:
                 return None
             
-            # Tra le biforcazioni, prendi quella con massima centrality
-            best_node = max(bifurcation_nodes, key=lambda n: centrality.get(n, 0))
+            bifurcation_nodes.sort(key=lambda n: G.nodes[n]['pos'][0], reverse=True)
+            candidates = bifurcation_nodes[:5]
+            
+            best_node = max(candidates, key=lambda n: centrality.get(n, 0))
             best_pos = G.nodes[best_node]['pos']
             
             z, y, x = int(best_pos[0]), int(best_pos[1]), int(best_pos[2])
@@ -358,32 +367,31 @@ class RobustCarinaDetector:
             
         except Exception as e:
             if self.verbose:
-                print(f"  Error in topology analysis: {e}")
+                print(f"  Error: {e}")
             return None
     
     def _detect_by_slice_analysis(self):
         """
-        Metodo 4: Analisi slice-by-slice cercando pattern di biforcazione
+        Analisi slice-by-slice
         """
         if self.verbose:
-            print("\nMethod 4: Slice-by-slice analysis...")
+            print("\nMethod 4: Slice analysis...")
         
         binary_mask = (self.cleaned_mask > 0).astype(np.uint8)
-        
         candidates = []
         
-        # Analizza ogni slice
-        for z in range(binary_mask.shape[0] - 1, max(0, binary_mask.shape[0] - 80), -1):
+        z_start = binary_mask.shape[0] - 1
+        z_min = max(0, int(binary_mask.shape[0] * 0.3))
+        
+        for z in range(z_start, z_min, -1):
             slice_2d = binary_mask[z, :, :]
             area = np.sum(slice_2d)
             
-            if area < 50:
+            if area < 30:
                 continue
             
-            # Conta componenti connesse
             labeled, num_objects = label(slice_2d)
             
-            # Calcola "circularity" (quanto è compatto)
             if area > 0:
                 coords = np.argwhere(slice_2d)
                 y_extent = np.max(coords[:, 0]) - np.min(coords[:, 0])
@@ -393,15 +401,13 @@ class RobustCarinaDetector:
             else:
                 compactness = 0
             
-            # Score: preferisci 2 oggetti, bassa compattezza (biforcazione)
             score = 0
             if num_objects == 2:
-                score = 2.0 * (1.0 - compactness)
+                score = 2.5 * (1.0 - compactness)
             elif num_objects > 2:
-                score = 1.0 * (1.0 - compactness)
+                score = 1.5 * (1.0 - compactness)
             
-            if score > 0.5:
-                # Trova centro di massa
+            if score > 0.4:
                 cy, cx = center_of_mass(slice_2d)
                 candidates.append({
                     'z': z,
@@ -414,8 +420,11 @@ class RobustCarinaDetector:
         if not candidates:
             return None
         
-        # Prendi il candidato con score più alto
-        best = max(candidates, key=lambda x: x['score'])
+        good_candidates = [c for c in candidates if c['score'] > 0.8]
+        if good_candidates:
+            best = max(good_candidates, key=lambda x: x['z'])
+        else:
+            best = max(candidates, key=lambda x: x['score'])
         
         if self.verbose:
             print(f"  Best: z={best['z']}, score={best['score']:.3f}")
@@ -424,34 +433,25 @@ class RobustCarinaDetector:
     
     def _vote_and_select(self, candidates):
         """
-        Voting tra i candidati per selezionare la posizione più affidabile
+        Voting tra candidati
         """
         if self.verbose:
             print(f"\nVoting among {len(candidates)} candidates...")
         
-        # Calcola distanze tra tutti i candidati
-        positions = np.array([c[1] for c in candidates])
-        weights = np.array([c[2] for c in candidates])
-        
-        # Weighted voting usando distanza spaziale
         best_idx = None
         best_consensus_score = -1
         
         for i, (method, pos, weight) in enumerate(candidates):
-            # Calcola consensus score: quanto questo candidato è vicino agli altri
             consensus = 0
             for j, (_, other_pos, other_weight) in enumerate(candidates):
                 if i == j:
                     continue
                 
-                # Distanza euclidea (in voxel)
                 dist = np.linalg.norm(np.array(pos) - np.array(other_pos))
                 
-                # Score inversamente proporzionale alla distanza
-                if dist < 20:  # entro 20 voxel
-                    consensus += other_weight * (1.0 - dist / 20)
+                if dist < 25:
+                    consensus += other_weight * (1.0 - dist / 25)
             
-            # Score totale = peso del metodo + consensus
             total_score = weight + consensus
             
             if self.verbose:
@@ -463,8 +463,6 @@ class RobustCarinaDetector:
                 best_idx = i
         
         best_method, best_pos, best_weight = candidates[best_idx]
-        
-        # Confidence basata sul consensus (normalizza a 0-5)
         confidence = min(5.0, best_consensus_score / len(candidates))
         
         return {
@@ -475,16 +473,15 @@ class RobustCarinaDetector:
     
     def _fallback_detection(self):
         """
-        Fallback: usa posizione anatomica standard se tutti i metodi falliscono
+        Fallback conservativo
         """
         if self.verbose:
-            print("\nUsing fallback detection (anatomical position)...")
+            print("\nUsing fallback detection...")
         
         binary_mask = (self.cleaned_mask > 0).astype(np.uint8)
         coords = np.argwhere(binary_mask)
         
         if len(coords) == 0:
-            # Ultimo resort: centro del volume
             self.carina_z = binary_mask.shape[0] // 2
             self.carina_y = binary_mask.shape[1] // 2
             self.carina_x = binary_mask.shape[2] // 2
@@ -492,78 +489,151 @@ class RobustCarinaDetector:
             self.detection_method = 'fallback_center'
             return self.carina_z, self.carina_y, self.carina_x, 0.5
         
-        # Usa 60% dall'alto (posizione anatomica tipica della carina)
         min_z, max_z = np.min(coords[:, 0]), np.max(coords[:, 0])
-        self.carina_z = int(min_z + (max_z - min_z) * 0.4)
+        self.carina_z = int(min_z + (max_z - min_z) * 0.5)
         
-        # Centro in y, x
         self.carina_y = int(np.mean(coords[:, 1]))
         self.carina_x = int(np.mean(coords[:, 2]))
         
-        self.confidence_score = 1.0
+        self.confidence_score = 1.5
         self.detection_method = 'fallback_anatomical'
         
-        return self.carina_z, self.carina_y, self.carina_x, 1.0
+        return self.carina_z, self.carina_y, self.carina_x, 1.5
     
-    def get_trachea_cutoff(self, safety_margin_mm=5):
+    def _trace_trachea_upward(self):
         """
-        Determina il punto di taglio ottimale per rimuovere la trachea
-        basato sulla carina detectata
-        
-        Args:
-            safety_margin_mm: Margine di sicurezza sopra la carina (mm)
-        
-        Returns:
-            cutoff_z: Coordinata Z per il taglio
+        NUOVA FUNZIONE: Risale dalla carina per identificare tutta la trachea
+        Trova dove inizia (top) e calcola la lunghezza totale
         """
-        if self.carina_z is None:
-            raise ValueError("Run detect_carina_robust() first")
+        if self.verbose:
+            print("\nTracing trachea upward from carina...")
         
-        # Converti margine da mm a voxel
-        margin_voxels = int(safety_margin_mm / self.spacing[2])
+        binary_mask = (self.cleaned_mask > 0).astype(np.uint8)
         
-        # Cutoff: carina + margine
-        cutoff_z = min(self.mask.shape[0] - 1, self.carina_z + margin_voxels)
+        # Parti dalla carina e sali
+        current_z = self.carina_z
+        trachea_slices = []
+        
+        # Trova la componente centrale (trachea) alla carina
+        carina_slice = binary_mask[current_z, :, :]
+        labeled, num_objects = label(carina_slice)
+        
+        if num_objects == 0:
+            if self.verbose:
+                print("  ⚠ No objects at carina level")
+            return None
+        
+        # Identifica quale componente è la trachea (quella più vicina al centro della carina)
+        min_dist = float('inf')
+        trachea_label = 1
+        
+        for obj_id in range(1, num_objects + 1):
+            obj_mask = (labeled == obj_id)
+            cy, cx = center_of_mass(obj_mask)
+            dist = np.sqrt((cy - self.carina_y)**2 + (cx - self.carina_x)**2)
+            if dist < min_dist:
+                min_dist = dist
+                trachea_label = obj_id
+        
+        # Ora risali cercando la continuazione di questa componente
+        for z in range(current_z, binary_mask.shape[0]):
+            slice_2d = binary_mask[z, :, :]
+            
+            if np.sum(slice_2d) == 0:
+                break
+            
+            # Cerca la componente connessa più centrale
+            labeled_z, num_objs = label(slice_2d)
+            
+            if num_objs == 0:
+                break
+            
+            # Se c'è una sola componente, è probabilmente la trachea
+            if num_objs == 1:
+                trachea_slices.append(z)
+                continue
+            
+            # Se ci sono multiple componenti, prendi quella più centrale
+            min_dist = float('inf')
+            found_trachea = False
+            
+            for obj_id in range(1, num_objs + 1):
+                obj_mask = (labeled_z == obj_id)
+                cy, cx = center_of_mass(obj_mask)
+                
+                # Distanza dal centro anatomico (centro del volume)
+                center_y = binary_mask.shape[1] / 2
+                center_x = binary_mask.shape[2] / 2
+                dist = np.sqrt((cy - center_y)**2 + (cx - center_x)**2)
+                
+                if dist < min_dist:
+                    min_dist = dist
+                    found_trachea = True
+            
+            if found_trachea:
+                # Verifica che non sia troppo laterale (rami bronchiali)
+                if min_dist < binary_mask.shape[1] * 0.3:  # entro 30% dal centro
+                    trachea_slices.append(z)
+                else:
+                    break
+            else:
+                break
+        
+        if len(trachea_slices) < 5:
+            if self.verbose:
+                print("  ⚠ Trachea too short, using fallback")
+            # Fallback: usa distanza anatomica dalla carina
+            self.trachea_top_z = min(binary_mask.shape[0] - 1, 
+                                     self.carina_z + int(50 / self.spacing[2]))  # ~50mm
+            self.trachea_length = self.trachea_top_z - self.carina_z
+            return
+        
+        self.trachea_top_z = max(trachea_slices)
+        self.trachea_length = self.trachea_top_z - self.carina_z
         
         if self.verbose:
-            print(f"\nTrachea cutoff determination:")
-            print(f"  Carina z: {self.carina_z}")
-            print(f"  Safety margin: {safety_margin_mm} mm ({margin_voxels} voxels)")
-            print(f"  Cutoff z: {cutoff_z}")
-        
-        return cutoff_z
+            print(f"  ✓ Trachea traced:")
+            print(f"    Bottom (carina): z={self.carina_z}")
+            print(f"    Top: z={self.trachea_top_z}")
+            print(f"    Length: {self.trachea_length} slices ({self.trachea_length * self.spacing[2]:.1f} mm)")
     
-    def remove_trachea(self, safety_margin_mm=5):
+    def remove_trachea(self):
         """
-        Rimuove la trachea mantenendo i bronchi
-        
-        Returns:
-            bronchi_mask: Maschera con solo i bronchi
-            cutoff_z: Coordinata del taglio
+        Rimuove solo il 50% superiore della trachea preservando carina e bronchi
         """
         if self.carina_z is None:
             raise ValueError("Run detect_carina_robust() first")
         
-        cutoff_z = self.get_trachea_cutoff(safety_margin_mm)
+        # Prima, traccia la trachea verso l'alto
+        self._trace_trachea_upward()
+        
+        if self.trachea_length is None or self.trachea_length < 5:
+            if self.verbose:
+                print("\n⚠ Cannot trace trachea, using conservative cutoff")
+            # Fallback: taglia molto conservativamente
+            cutoff_z = min(self.cleaned_mask.shape[0] - 1, 
+                          self.carina_z + int(10 / self.spacing[2]))
+        else:
+            # Calcola 50% della lunghezza della trachea
+            half_trachea = self.trachea_length // 2
+            cutoff_z = self.carina_z + half_trachea
+        
+        if self.verbose:
+            print(f"\n{'='*70}")
+            print("TRACHEA REMOVAL:")
+            print(f"{'='*70}")
+            print(f"  Carina: z={self.carina_z}")
+            print(f"  Trachea top: z={self.trachea_top_z}")
+            print(f"  Cutoff (50% point): z={cutoff_z}")
+            print(f"  Removing from z={cutoff_z} upward")
         
         bronchi_mask = self.cleaned_mask.copy()
+        original_voxels = np.sum(bronchi_mask > 0)
         
         # Rimuovi tutto sopra il cutoff
-        original_voxels = np.sum(bronchi_mask > 0)
         bronchi_mask[cutoff_z:, :, :] = 0
         
-        # Preserva piccola regione attorno alla carina per connettività
-        preserve_radius = 2
-        z0 = max(0, self.carina_z - preserve_radius)
-        z1 = min(bronchi_mask.shape[0], self.carina_z + preserve_radius + 1)
-        y0 = max(0, self.carina_y - preserve_radius)
-        y1 = min(bronchi_mask.shape[1], self.carina_y + preserve_radius + 1)
-        x0 = max(0, self.carina_x - preserve_radius)
-        x1 = min(bronchi_mask.shape[2], self.carina_x + preserve_radius + 1)
-        
-        bronchi_mask[z0:z1, y0:y1, x0:x1] = self.cleaned_mask[z0:z1, y0:y1, x0:x1]
-        
-        # Morfologia minima per connettività
+        # Morfologia leggera per smoothing
         struct = generate_binary_structure(3, 1)
         bronchi_mask_binary = (bronchi_mask > 0).astype(np.uint8)
         bronchi_mask_binary = binary_dilation(bronchi_mask_binary, structure=struct, iterations=1)
@@ -585,68 +655,50 @@ class RobustCarinaDetector:
 
 def integrate_with_pipeline(mask_path, spacing=None, save_visualization=True):
     """
-    Funzione di integrazione con la pipeline esistente
-    
-    Args:
-        mask_path: Path alla maschera delle vie aeree
-        spacing: Tuple (x,y,z) spacing, se None lo legge dall'immagine
-        save_visualization: Salva visualizzazioni debug
-    
-    Returns:
-        bronchi_mask: Maschera dei soli bronchi
-        carina_coords: Tuple (z, y, x) coordinate della carina
-        confidence: Score di confidenza (0-5)
-        cutoff_z: Coordinata Z del taglio
+    Integrazione con pipeline
     """
-    # Load mask
     sitk_image = sitk.ReadImage(mask_path)
     mask = sitk.GetArrayFromImage(sitk_image)
     
     if spacing is None:
         spacing = sitk_image.GetSpacing()
     
-    # Detect carina
     detector = RobustCarinaDetector(mask, spacing, verbose=True)
     carina_z, carina_y, carina_x, confidence = detector.detect_carina_robust()
     
-    # Remove trachea
-    bronchi_mask, cutoff_z = detector.remove_trachea(safety_margin_mm=5)
+    # Nuova logica: rimuovi solo 50% superiore della trachea
+    bronchi_mask, cutoff_z = detector.remove_trachea()
     
     return bronchi_mask, (carina_z, carina_y, carina_x), confidence, cutoff_z
 
 
-# ESEMPIO DI UTILIZZO
 if __name__ == "__main__":
     import os
     
     print("="*70)
-    print(" "*15 + "ROBUST CARINA DETECTION - EXAMPLE")
+    print(" "*15 + "TRACHEA-AWARE CARINA DETECTION")
     print("="*70)
     
-    # Parametri
-    mask_path = "airway_segmentation/1.2.840.113704.1.111.1396.1132404220.7_airwayfull.nii.gz"
+    mask_path = "airway_segmentation/1.2.840.113704.1.111.276.1120287318.6_airwayfull.nii.gz"
     
     if os.path.exists(mask_path):
-        # Usa la funzione di integrazione
         bronchi_mask, carina_coords, confidence, cutoff_z = integrate_with_pipeline(
             mask_path, 
-            spacing=None,  # Auto-detect
+            spacing=None,
             save_visualization=True
         )
         
         print(f"\n{'='*70}")
-        print("RESULTS:")
+        print("FINAL RESULTS:")
         print(f"{'='*70}")
-        print(f"Carina position: z={carina_coords[0]}, y={carina_coords[1]}, x={carina_coords[2]}")
-        print(f"Confidence score: {confidence:.2f}/5.0")
-        print(f"Trachea cutoff: z={cutoff_z}")
+        print(f"Carina: z={carina_coords[0]}, y={carina_coords[1]}, x={carina_coords[2]}")
+        print(f"Confidence: {confidence:.2f}/5.0")
+        print(f"Cutoff: z={cutoff_z}")
         print(f"Bronchi voxels: {np.sum(bronchi_mask > 0):,}")
         
-        # Salva risultato
         output_sitk = sitk.GetImageFromArray(bronchi_mask.astype(np.uint8))
         output_sitk.CopyInformation(sitk.ReadImage(mask_path))
-        sitk.WriteImage(output_sitk, "bronchi_only_robust.nii.gz")
-        print(f"\n✓ Saved: bronchi_only_robust.nii.gz")
+        sitk.WriteImage(output_sitk, "bronchi_with_carina_preserved.nii.gz")
+        print(f"\n✓ Saved: bronchi_with_carina_preserved.nii.gz")
     else:
         print(f"\n⚠ File not found: {mask_path}")
-        print("Please update the mask_path variable with your file path")
