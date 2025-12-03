@@ -6,6 +6,8 @@ from skimage.morphology import skeletonize, ball
 from skan import Skeleton, summarize
 import networkx as nx
 from collections import defaultdict
+from airway_graph import AirwayGraphAnalyzer
+import json
 
 
 class EnhancedCarinaDetector:
@@ -16,18 +18,23 @@ class EnhancedCarinaDetector:
     - Preservazione completa di tutti i rami bronchiali
     """
     
-    def __init__(self, mask, spacing, verbose=True, precut_z=390):
+    def __init__(self, mask, spacing, verbose=True, precut_z=390, trachea_remove_fraction=0.3):
         """
         Args:
             mask: Maschera 3D delle vie aeree (numpy array)
             spacing: Tuple (x,y,z) spacing in mm
             verbose: Print debug information
             precut_z: Z-level per pre-cut iniziale (default 390)
+            trachea_remove_fraction: Fraction of the identified trachea length to remove
+                starting from the superior end (default 0.3 = remove top 30%).
         """
         self.mask = mask
         self.spacing = spacing
         self.verbose = verbose
         self.precut_z = precut_z
+        # Fraction (0..1) of trachea length to remove from the superior/top end
+        # Smaller values preserve more trachea near the carina.
+        self.trachea_remove_fraction = float(trachea_remove_fraction)
         
         # Risultati
         self.precut_mask = None
@@ -295,19 +302,22 @@ class EnhancedCarinaDetector:
         # Rimuovi solo la trachea identificata
         self.cleaned_mask = self.precut_mask.copy()
         
-        # Rimuovi metà superiore della trachea per essere conservativi
-        trachea_midpoint = self.trachea_bottom_z + self.trachea_length // 2
-        
-        for z in range(trachea_midpoint, self.trachea_top_z + 1):
+        # Rimuovi solo la porzione superiore della trachea: usare una frazione configurabile
+        remove_slices = max(1, int(self.trachea_length * self.trachea_remove_fraction))
+        # Calcola indice di inizio rimozione (inclusive)
+        removal_start_z = max(self.trachea_bottom_z, self.trachea_top_z - remove_slices + 1)
+
+        for z in range(removal_start_z, self.trachea_top_z + 1):
             # Rimuovi solo la componente tracheale, non tutto lo slice
             trachea_slice = self.trachea_mask[z, :, :]
             self.cleaned_mask[z, :, :] = self.cleaned_mask[z, :, :] * (1 - trachea_slice)
-        
+
         removed_voxels = np.sum(self.precut_mask > 0) - np.sum(self.cleaned_mask > 0)
-        
+
         if self.verbose:
             print(f"  ✓ Intelligent cleaning complete:")
-            print(f"  Trachea midpoint: z={trachea_midpoint}")
+            print(f"  Trachea removal fraction: {self.trachea_remove_fraction:.2f}")
+            print(f"  Removal range: z={removal_start_z} to z={self.trachea_top_z} ({remove_slices} slices)")
             print(f"  Removed: {removed_voxels:,} voxels (trachea only)")
             print(f"  Preserved: all bronchial branches")
     
@@ -645,8 +655,9 @@ class EnhancedCarinaDetector:
             print(f"{'='*70}")
             print(f"  Voxels: {np.sum(bronchi_mask > 0):,}")
             print(f"  Carina preserved at: z={self.carina_z}")
-            if self.trachea_bottom_z:
-                print(f"  Trachea removed from: z={self.trachea_bottom_z + self.trachea_length//2} to z={self.trachea_top_z}")
+            if self.trachea_bottom_z is not None and self.trachea_top_z is not None and self.trachea_length is not None:
+                removal_start = max(self.trachea_bottom_z, self.trachea_top_z - max(1, int(self.trachea_length * self.trachea_remove_fraction)) + 1)
+                print(f"  Trachea removed from: z={removal_start} to z={self.trachea_top_z}")
         
         return bronchi_mask
 
@@ -671,6 +682,94 @@ def integrate_with_pipeline(mask_path, spacing=None, precut_z=390, save_output=T
         output_path = "bronchi_enhanced_conservative.nii.gz"
         sitk.WriteImage(output_sitk, output_path)
         print(f"\n✓ Saved: {output_path}")
+        # Generate graph visualization with carina highlighted (red dot)
+        try:
+            print("\nGenerating airway graph visualization (this may take a moment)...")
+            # Pass the carina coordinates detected above so the graph analyzer
+            # uses the same reference point (voxel coordinates: z,y,x)
+            graph_analyzer = AirwayGraphAnalyzer(output_path, carina_coords=(int(carina_z), int(carina_y), int(carina_x)))
+            graph_analyzer.compute_skeleton()
+            graph_analyzer.analyze_connected_components()
+            graph_analyzer.build_graph()
+            # Ensure carina is identified in the graph analyzer (will compute if needed)
+            graph_analyzer.identify_carina()
+            # Save carina coordinates to JSON
+            try:
+                carina_info = graph_analyzer.get_carina_coordinates()
+                json_path = "carina_coordinates.json"
+                with open(json_path, 'w') as jf:
+                    json.dump(carina_info, jf, indent=2)
+                print(f"✓ Saved carina coordinates JSON: {json_path}")
+            except Exception as e:
+                print(f"⚠ Warning: could not save carina JSON: {e}")
+
+            # For a clearer, ordered visualization draw continuous branches
+            # instead of just nodes. Compute branch metrics (length/diameter)
+            # and generation assignment so that the plot shows well-defined
+            # branches and a prominent carina marker.
+            try:
+                # Calculate lengths and diameters along branches
+                graph_analyzer.calculate_branch_lengths()
+                graph_analyzer.analyze_diameters()
+                graph_analyzer.merge_branch_metrics()
+
+                # Assign Weibel generations (used to color/organize branches)
+                try:
+                    graph_analyzer.assign_generations_weibel()
+                except Exception:
+                    # If generation assignment fails, still attempt branch plot
+                    pass
+
+                graph_img_path = "bronchi_graph_with_carina.png"
+                # This method draws full branches (continuous lines) and highlights
+                # the carina with a large red marker, producing a much clearer tree
+                # image than the node-scatter view.
+                graph_analyzer.visualize_weibel_generations_with_carina(save_path=graph_img_path)
+                print(f"✓ Saved graph image with carina: {graph_img_path}")
+            except Exception as e:
+                print(f"⚠ Warning: could not generate branch-ordered graph visualization: {e}")
+
+            # Additionally, save a 3D skeleton view with the carina overlaid (PNG)
+            try:
+                import matplotlib.pyplot as plt
+
+                skel = graph_analyzer.skeleton
+                if skel is not None:
+                    skel_coords = np.argwhere(skel > 0)
+                    if len(skel_coords) > 0:
+                        subsample = max(1, len(skel_coords) // 20000)
+                        skel_coords = skel_coords[::subsample]
+
+                        fig = plt.figure(figsize=(12, 10))
+                        ax = fig.add_subplot(111, projection='3d')
+                        ax.scatter(skel_coords[:, 2], skel_coords[:, 1], skel_coords[:, 0],
+                                   c='lightblue', marker='.', s=1, alpha=0.6, label='Skeleton')
+
+                        # Carina voxel coordinates
+                        try:
+                            carina_vox = graph_analyzer.get_carina_coordinates()['voxel_coordinates']
+                            cz, cy, cx = int(carina_vox['z']), int(carina_vox['y']), int(carina_vox['x'])
+                            ax.scatter(cx, cy, cz, c='red', s=200, marker='o', edgecolors='black', linewidths=1.5,
+                                       label='Carina')
+                            ax.text(cx, cy, cz + 5, f'Carina\nZ:{cz} Y:{cy} X:{cx}', color='red', fontsize=9,
+                                    ha='center', va='bottom', bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+                        except Exception:
+                            pass
+
+                        ax.set_xlabel('X (voxel)')
+                        ax.set_ylabel('Y (voxel)')
+                        ax.set_zlabel('Z (voxel)')
+                        ax.set_title('3D Skeleton with Carina Highlighted')
+                        ax.legend()
+
+                        skel_img_path = "skeleton_with_carina.png"
+                        plt.savefig(skel_img_path, dpi=150, bbox_inches='tight')
+                        plt.close(fig)
+                        print(f"✓ Saved skeleton image with carina: {skel_img_path}")
+            except Exception as e:
+                print(f"⚠ Warning: could not generate skeleton PNG: {e}")
+        except Exception as e:
+            print(f"⚠ Warning: could not generate graph visualization: {e}")
     
     return bronchi_mask, (carina_z, carina_y, carina_x), confidence, detector
 
@@ -683,7 +782,7 @@ if __name__ == "__main__":
     print("="*70)
     
     # Test con file di esempio
-    mask_path = "airway_segmentation/1.2.840.113704.1.111.1396.1132404220.7_airwayfull.nii.gz"
+    mask_path = "airway_segmentation/1.2.840.113704.1.111.5964.1132388375.7_airwayfull.nii.gz"
     
     if not os.path.exists(mask_path):
         print(f"❌ ERROR: File not found: {mask_path}")

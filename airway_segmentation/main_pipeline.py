@@ -96,56 +96,48 @@ class CompleteAirwayPipeline:
             print("="*80)
             print("Using ultra-conservative trachea identification method")
             print("Strategy: Pre-cut → Identify trachea → Remove upper 50% only")
-            
-            # Load mask using SimpleITK
-            sitk_image = sitk.ReadImage(airway_path)
-            mask = sitk.GetArrayFromImage(sitk_image)
-            spacing = sitk_image.GetSpacing()
 
-            # Use EnhancedCarinaDetector with new conservative method
-            detector = EnhancedCarinaDetector(mask, spacing, verbose=True, precut_z=precut_z)
-            
-            # Detect carina with enhanced method
-            carina_z, carina_y, carina_x, confidence = detector.detect_carina_robust()
+            # IMPORTANTE: Importa la funzione che salva i grafici
+            from test_robust import integrate_with_pipeline
 
-            # Get bronchi mask using enhanced conservative method
-            bronchi_mask = detector.get_bronchi_mask()
-            
-            # Save result
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            bronchi_filename = f"{scan_name}_bronchi_enhanced_{timestamp}.nii.gz"
+            # Usa integrate_with_pipeline che salva TUTTO (maschera + grafici + JSON)
+            bronchi_mask, carina_coords, confidence, detector = integrate_with_pipeline(
+                airway_path,
+                spacing=None,
+                precut_z=precut_z,
+                save_output=True
+            )
+
+            # I file sono già stati salvati nella directory corrente
+            # Spostiamoli nella directory step2_dir
+            import shutil
+            import glob
+
+            # File che integrate_with_pipeline ha creato nella directory corrente
+            files_to_move = [
+                "bronchi_enhanced_conservative.nii.gz",
+                "carina_coordinates.json",
+                "bronchi_graph_with_carina.png",
+                "skeleton_with_carina.png"
+            ]
+
+            for file_name in files_to_move:
+                if os.path.exists(file_name):
+                    dest_path = os.path.join(step2_dir, file_name)
+                    shutil.move(file_name, dest_path)
+                    print(f"  Moved: {file_name} → {dest_path}")
+
+            # Ora rinomina anche la maschera principale
+            bronchi_filename = f"{scan_name}_bronchi_enhanced.nii.gz"
             bronchi_path = os.path.join(step2_dir, bronchi_filename)
-            
-            bronchi_sitk = sitk.GetImageFromArray(bronchi_mask.astype(np.uint8))
-            bronchi_sitk.CopyInformation(sitk_image)
-            sitk.WriteImage(bronchi_sitk, bronchi_path)
-            
-            results['bronchi_mask'] = bronchi_path
-            results['carina_coordinates'] = {
-                'z': int(carina_z),
-                'y': int(carina_y),
-                'x': int(carina_x)
-            }
-            results['trachea_info'] = {
-                'precut_z': int(precut_z),
-                'trachea_top_z': int(detector.trachea_top_z) if detector.trachea_top_z else None,
-                'trachea_bottom_z': int(detector.trachea_bottom_z) if detector.trachea_bottom_z else None,
-                'trachea_length_slices': int(detector.trachea_length) if detector.trachea_length else None,
-                'trachea_length_mm': float(detector.trachea_length * spacing[2]) if detector.trachea_length else None,
-                'detection_method': detector.detection_method,
-                'confidence': float(confidence)
-            }
-            
-            print(f"\n✓ Enhanced trachea removal complete: {bronchi_path}")
-            print(f"  Carina: (z={carina_z}, y={carina_y}, x={carina_x})")
-            print(f"  Confidence: {confidence:.2f}/5.0")
-            print(f"  Method: {detector.detection_method}")
-            print(f"  Pre-cut applied at: z={precut_z}")
-            
-            if detector.trachea_length:
-                print(f"  Trachea identified: z={detector.trachea_top_z} to z={detector.trachea_bottom_z}")
-                print(f"  Trachea length: {detector.trachea_length} slices ({detector.trachea_length * spacing[2]:.1f} mm)")
-            
+
+            # Carica la maschera salvata da integrate_with_pipeline
+            bronchi_original_path = os.path.join(step2_dir, "bronchi_enhanced_conservative.nii.gz")
+            if os.path.exists(bronchi_original_path):
+                os.rename(bronchi_original_path, bronchi_path)
+
+            # Aggiungi le coordinate della carina ai risultati
+            carina_z, carina_y, carina_x = carina_coords
             # ============================================================
             # STEP 3: PREPROCESSING WITH COMPONENT RECONNECTION
             # ============================================================

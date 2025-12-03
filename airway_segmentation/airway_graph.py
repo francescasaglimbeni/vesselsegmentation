@@ -8,6 +8,7 @@ from scipy.ndimage import distance_transform_edt, label
 from skan import Skeleton, summarize
 import networkx as nx
 import pandas as pd
+import json
 from matplotlib.colors import Normalize
 import matplotlib.cm as cm
 from scipy import ndimage
@@ -26,7 +27,7 @@ class AirwayGraphAnalyzer:
     - Analyzes and manages connected components of the skeleton
     """
     
-    def __init__(self, airway_mask_path, spacing=None):
+    def __init__(self, airway_mask_path, spacing=None, carina_coords=None):
         """
         Args:
             airway_mask_path: Path to .nii.gz airway mask file (bronchi only, no trachea)
@@ -58,6 +59,9 @@ class AirwayGraphAnalyzer:
         self.carina_node = None
         self.generation_assignments = None
         self.weibel_analysis_df = None
+        # Optional: initial carina coordinates (voxel coordinates: z,y,x)
+        # Can be provided by external detector (e.g. test_robust) or loaded from JSON
+        self.initial_carina_coords = tuple(carina_coords) if carina_coords is not None else None
         
     def compute_skeleton(self):
         """Computes the 3D skeleton of the mask"""
@@ -356,6 +360,55 @@ class AirwayGraphAnalyzer:
             G.add_edge(node1, node2, length=length, branch_type=row['branch-type'])
         
         return G
+
+    def set_initial_carina_coords(self, coords):
+        """
+        Set initial carina coordinates (voxel coordinates: z, y, x).
+        These coordinates typically come from an external detector (e.g. test_robust).
+        """
+        if coords is None:
+            self.initial_carina_coords = None
+        else:
+            self.initial_carina_coords = tuple(coords)
+
+    def load_carina_from_json(self, json_path='carina_coordinates.json'):
+        """
+        Loads carina coordinates from a JSON file. Supported formats:
+        - {'voxel_coordinates': {'z':..,'y':..,'x':..}}
+        - [z, y, x] or {'carina': [z,y,x]} or simple list/tuple
+        Returns the coordinates (z,y,x) or None if not found.
+        """
+        if not os.path.exists(json_path):
+            return None
+
+        try:
+            with open(json_path, 'r') as jf:
+                data = json.load(jf)
+
+            # common structure from get_carina_coordinates()
+            if isinstance(data, dict) and 'voxel_coordinates' in data:
+                v = data['voxel_coordinates']
+                z = int(v.get('z', 0))
+                y = int(v.get('y', 0))
+                x = int(v.get('x', 0))
+                self.initial_carina_coords = (z, y, x)
+                return self.initial_carina_coords
+
+            # If stored as simple list or tuple
+            if isinstance(data, (list, tuple)) and len(data) >= 3:
+                self.initial_carina_coords = (int(data[0]), int(data[1]), int(data[2]))
+                return self.initial_carina_coords
+
+            # Nested keys
+            for key in ('carina', 'position', 'coordinates'):
+                if key in data and isinstance(data[key], (list, tuple)) and len(data[key]) >= 3:
+                    self.initial_carina_coords = (int(data[key][0]), int(data[key][1]), int(data[key][2]))
+                    return self.initial_carina_coords
+
+        except Exception as e:
+            print(f"Warning: could not load carina JSON '{json_path}': {e}")
+
+        return None
     
     def identify_carina(self):
         """
@@ -366,6 +419,70 @@ class AirwayGraphAnalyzer:
         
         if self.graph is None:
             raise ValueError("Build graph first with build_graph()")
+
+        # If an external carina coordinate was provided (voxel coords: z,y,x),
+        # map it to the nearest graph node and use that as the carina.
+        if getattr(self, 'initial_carina_coords', None) is not None:
+            target = np.array(self.initial_carina_coords, dtype=float)
+            min_dist = float('inf')
+            best_node = None
+            for node in self.graph.nodes():
+                pos = np.array(self.graph.nodes[node]['pos'], dtype=float)
+                # Euclidean distance in voxel space
+                d = np.linalg.norm(pos - target)
+                if d < min_dist:
+                    min_dist = d
+                    best_node = node
+
+            if best_node is None:
+                print("Warning: could not match provided carina coords to graph nodes")
+            else:
+                self.carina_node = best_node
+                carina_position = self.graph.nodes[self.carina_node]['pos']
+                # diameter at node (use distance transform if available)
+                z_i, y_i, x_i = int(round(carina_position[0])), int(round(carina_position[1])), int(round(carina_position[2]))
+                if hasattr(self, 'distance_transform') and self.distance_transform is not None and \
+                   0 <= z_i < self.distance_transform.shape[0] and \
+                   0 <= y_i < self.distance_transform.shape[1] and \
+                   0 <= x_i < self.distance_transform.shape[2]:
+                    diameter_at_node = self.distance_transform[z_i, y_i, x_i] * 2
+                else:
+                    diameter_at_node = 0.0
+
+                # average branch diameter from adjacent edges if available
+                neighbor_diams = []
+                for nb in self.graph.neighbors(self.carina_node):
+                    edge = tuple(sorted([self.carina_node, nb]))
+                    if 'diameter' in self.graph.edges[edge]:
+                        neighbor_diams.append(self.graph.edges[edge]['diameter'])
+
+                avg_branch_diameter = np.mean(neighbor_diams) if neighbor_diams else diameter_at_node
+
+                node_info = [{
+                    'node': self.carina_node,
+                    'degree': self.graph.degree(self.carina_node),
+                    'diameter_at_node': diameter_at_node,
+                    'avg_branch_diameter': avg_branch_diameter,
+                    'z': z_i,
+                    'y': y_i,
+                    'x': x_i,
+                    'position': carina_position
+                }]
+
+                print(f"Using external carina coords mapped to node {self.carina_node} (dist {min_dist:.2f} voxels)")
+
+                # Save carina info and return
+                self.carina_info = {
+                    'node_id': self.carina_node,
+                    'position': carina_position,
+                    'avg_branch_diameter': avg_branch_diameter,
+                    'diameter_at_node': diameter_at_node,
+                    'degree': node_info[0]['degree'],
+                    'coordinates_voxel': (node_info[0]['z'], node_info[0]['y'], node_info[0]['x']),
+                    'coordinates_world': (carina_position[2], carina_position[1], carina_position[0])
+                }
+
+                return self.carina_node, avg_branch_diameter, carina_position
         
         # Trova nodi con grado >= 2 (potenziali biforcazioni)
         candidate_nodes = [node for node in self.graph.nodes() 

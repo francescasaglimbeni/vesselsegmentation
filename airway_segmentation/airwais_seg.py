@@ -31,6 +31,8 @@ def segment_airwayfull_from_mhd(mhd_path, output_dir, fast=False):
     """
     Segmenta le vie aeree complete (trachea + bronchi) e salva un file unico
     chiamato `<base>_airwayfull.nii.gz` usando la classe 'lung_trachea_bronchia'.
+    
+    FIXED: Disabilita multiprocessing per evitare memory leak
     """
 
     os.makedirs(output_dir, exist_ok=True)
@@ -39,11 +41,19 @@ def segment_airwayfull_from_mhd(mhd_path, output_dir, fast=False):
     nifti_path = convert_mhd_to_nifti(mhd_path, output_dir)
 
     print("\n=== 2) Segmentazione AIRWAYFULL con TotalSegmentator (task 'lung_vessels') ===")
+    print("⚠️  Multiprocessing disabled for stability")
+    
+    # CRITICAL FIX: Disabilita multiprocessing
     totalsegmentator(
         nifti_path,
         output_dir,
         task="lung_vessels",
         fast=fast,
+        nr_thr_resamp=1,      # Single thread for resampling
+        nr_thr_saving=1,      # Single thread for saving
+        force_split=False,    # Don't split processing
+        crop_path=None,       # No intermediate cropping
+        skip_saving=False,
     )
 
     airway_src = os.path.join(output_dir, "lung_trachea_bronchia.nii.gz")
@@ -59,19 +69,3 @@ def segment_airwayfull_from_mhd(mhd_path, output_dir, fast=False):
 
     print(f"\n✓ AirwayFull estratto: {airway_dst}")
     return airway_dst
-
-
-'''
-if __name__ == "__main__":
-    # <--- modifica qui i path come ti serve
-    input_mhd_path = "/content/vesselsegmentation/CARVE14/1.2.840.113704.1.111.2604.1126357612.7.mhd"
-    output_dir = "/content/vesselsegmentation/output"
-    fast_mode = False
-    # AirwayFull (trachea + bronchi dal task 'lung_vessels') — unico output richiesto
-    airwayfull_path = segment_airwayfull_from_mhd(
-        input_mhd_path, output_dir, fast=fast_mode
-    )
-
-    print("\n=== COMPLETATO ===")
-    print(f"File airwayfull: {airwayfull_path}")
-'''
