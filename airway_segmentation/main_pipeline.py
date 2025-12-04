@@ -85,6 +85,21 @@ class CompleteAirwayPipeline:
                 fast=fast_segmentation
             )
             
+            from airway_refinement import AirwayRefinementModule
+
+            sitk_img = sitk.ReadImage(airway_path)
+            img_np = sitk.GetArrayFromImage(sitk_img)
+            mask_np = (img_np > 0).astype(np.uint8)  # TS airwayfull mask
+
+            ARM = AirwayRefinementModule(img_np, mask_np, sitk_img.GetSpacing())
+            refined_mask = ARM.refine()
+
+            refined_path = os.path.join(step1_dir, f"{scan_name}_airway_refined.nii.gz")
+            ARM.save(refined_path, sitk_img)
+
+            airway_path = refined_path   # <-- sostituisce la segmentazione standard
+            print("✓ Airway refinement complete")
+
             results['airway_segmentation'] = airway_path
             print(f"\n✓ Segmentation complete: {airway_path}")
             

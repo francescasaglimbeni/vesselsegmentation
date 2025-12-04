@@ -31,8 +31,6 @@ def segment_airwayfull_from_mhd(mhd_path, output_dir, fast=False):
     """
     Segmenta le vie aeree complete (trachea + bronchi) e salva un file unico
     chiamato `<base>_airwayfull.nii.gz` usando la classe 'lung_trachea_bronchia'.
-    
-    FIXED: Disabilita multiprocessing per evitare memory leak
     """
 
     os.makedirs(output_dir, exist_ok=True)
@@ -41,19 +39,12 @@ def segment_airwayfull_from_mhd(mhd_path, output_dir, fast=False):
     nifti_path = convert_mhd_to_nifti(mhd_path, output_dir)
 
     print("\n=== 2) Segmentazione AIRWAYFULL con TotalSegmentator (task 'lung_vessels') ===")
-    print("⚠️  Multiprocessing disabled for stability")
     
-    # CRITICAL FIX: Disabilita multiprocessing
     totalsegmentator(
         nifti_path,
         output_dir,
         task="lung_vessels",
         fast=fast,
-        nr_thr_resamp=1,      # Single thread for resampling
-        nr_thr_saving=1,      # Single thread for saving
-        force_split=False,    # Don't split processing
-        crop_path=None,       # No intermediate cropping
-        skip_saving=False,
     )
 
     airway_src = os.path.join(output_dir, "lung_trachea_bronchia.nii.gz")
