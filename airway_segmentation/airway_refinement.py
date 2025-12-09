@@ -3,6 +3,7 @@ import SimpleITK as sitk
 from scipy.ndimage import distance_transform_edt, binary_dilation
 from skimage.morphology import skeletonize
 from skimage.filters import threshold_otsu
+from preprocessin_cleaning import SegmentationPreprocessor
 
 
 class AirwayRefinementModule:
@@ -12,12 +13,37 @@ class AirwayRefinementModule:
         self.mask = mask              # TS segmentation (numpy binary)
         self.spacing = spacing
         self.refined = None
+        self.hu_air_threshold = self._estimate_air_threshold()
 
     def _compute_distance(self):
         return distance_transform_edt(self.mask == 0, sampling=self.spacing)
 
     def _compute_skeleton(self):
-        return skeletonize(self.mask.astype(np.uint8))
+        return SegmentationPreprocessor.compute_itk_skeleton(self.mask, self.spacing)
+    def _estimate_air_threshold(self):
+        """
+        Stima adattiva della HU threshold per distinguere aria/polmone.
+        Basata sull'istogramma delle intensità nella regione dei polmoni.
+        """
+        # Considera solo voxel mascherati (via aeree + parenchima)
+        img = self.img.astype(np.int16)
+        flat = img[self.mask > 0].flatten()
+
+        # Limita a HU plausibili per il polmone
+        flat = flat[(flat > -1200) & (flat < 200)]
+
+        # Istogramma per identificare il picco dell'aria
+        hist, bins = np.histogram(flat, bins=200, range=(-1200, 200))
+        peak_index = np.argmax(hist)
+        air_peak = bins[peak_index]
+
+        # La soglia dell'aria è un margine sopra il picco
+        threshold = air_peak + 80  # 80 HU sopra la moda
+        threshold = min(threshold, -700)  # non deve diventare troppo permissivo
+
+        print(f"[Adaptive HU] air_peak={air_peak:.1f}, threshold={threshold:.1f}")
+
+        return threshold
 
     def _seed_region_grow(self, seed, max_dist_mm=3):
         sx, sy, sz = self.spacing
@@ -42,7 +68,7 @@ class AirwayRefinementModule:
                             continue
 
                         # Check voxel
-                        if self.img[nz, ny, nx] < -900:       # Air HU
+                        if self.img[nz, ny, nx] < self.hu_air_threshold:       # Air HU
                             if np.linalg.norm([nz-seed[0], ny-seed[1], nx-seed[2]]) < max_dist_vox:
                                 queue.append((nz, ny, nx))
                                 visited.add((nz, ny, nx))
@@ -64,7 +90,7 @@ class AirwayRefinementModule:
                     refined[gz, gy, gx] = 1
 
         # 2) DT-based expansion
-        air = self.img < -950
+        air = self.img < self.hu_air_threshold
         candidates = (dt < 2.5) & air
         refined = np.logical_or(refined, candidates)
 

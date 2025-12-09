@@ -8,7 +8,8 @@ import networkx as nx
 from collections import defaultdict
 from airway_graph import AirwayGraphAnalyzer
 import json
-
+from preprocessin_cleaning import SegmentationPreprocessor
+compute_itk_skeleton = SegmentationPreprocessor.compute_itk_skeleton
 
 class EnhancedCarinaDetector:
     """
@@ -31,7 +32,8 @@ class EnhancedCarinaDetector:
         self.mask = mask
         self.spacing = spacing
         self.verbose = verbose
-        self.precut_z = precut_z
+        self.precut_z = self._estimate_precut()
+        print(f"[Dynamic precut] Using z={self.precut_z}")
         # Fraction (0..1) of trachea length to remove from the superior/top end
         # Smaller values preserve more trachea near the carina.
         self.trachea_remove_fraction = float(trachea_remove_fraction)
@@ -49,6 +51,26 @@ class EnhancedCarinaDetector:
         self.trachea_length = None
         self.trachea_mask = None
         
+    def _estimate_precut(self):
+        """
+        Stima automatica della regione cervicale da tagliare:
+        cerca la prima comparsa di lumen tracheale ben formato.
+        """
+        mask = self.mask
+        Z = mask.shape[0]
+
+        # Conta voxels airway per ogni slice
+        counts = np.array([np.sum(mask[z] > 0) for z in range(Z)])
+
+        # La parte alta è rumore/cervicale: pochi voxel e discontinui
+        # Trova primo z dove la trachea appare "stabile"
+        for z in range(Z - 1, 0, -1):
+            if counts[z] > 80:   # lumen tracheale tipicamente >80 vox
+                return max(0, z - 5)
+
+        # fallback
+        return int(Z * 0.85)
+
     def detect_carina_robust(self):
         """
         Detection robusta con pre-cut e identificazione trachea
@@ -393,7 +415,7 @@ class EnhancedCarinaDetector:
         
         try:
             binary_mask = (self.cleaned_mask > 0).astype(np.uint8)
-            skeleton = skeletonize(binary_mask)
+            skeleton = compute_itk_skeleton(binary_mask, self.spacing)
             if np.sum(skeleton) < 10:
                 return None
             
@@ -455,7 +477,7 @@ class EnhancedCarinaDetector:
         
         try:
             binary_mask = (self.cleaned_mask > 0).astype(np.uint8)
-            skeleton = skeletonize(binary_mask)
+            skeleton = compute_itk_skeleton(binary_mask, self.spacing)
             if np.sum(skeleton) < 10:
                 return None
             

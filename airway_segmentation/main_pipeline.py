@@ -28,7 +28,7 @@ class CompleteAirwayPipeline:
         os.makedirs(output_root, exist_ok=True)
         
     def process_single_scan(self, mhd_path, scan_name=None, 
-                           fast_segmentation=False, precut_z=390):
+                           fast_segmentation=False):
         """
         Process a single MHD scan through the complete pipeline
         
@@ -36,7 +36,6 @@ class CompleteAirwayPipeline:
             mhd_path: Path to .mhd file
             scan_name: Optional name for the scan (defaults to filename)
             fast_segmentation: Use fast mode for TotalSegmentator
-            precut_z: Z-level for pre-cut (default 390)
         
         Returns:
             Dictionary with results and paths
@@ -87,7 +86,7 @@ class CompleteAirwayPipeline:
             
             from airway_refinement import AirwayRefinementModule
 
-            sitk_img = sitk.ReadImage(airway_path)
+            ''' sitk_img = sitk.ReadImage(airway_path)
             img_np = sitk.GetArrayFromImage(sitk_img)
             mask_np = (img_np > 0).astype(np.uint8)  # TS airwayfull mask
 
@@ -98,10 +97,32 @@ class CompleteAirwayPipeline:
             ARM.save(refined_path, sitk_img)
 
             airway_path = refined_path   # <-- sostituisce la segmentazione standard
-            print("✓ Airway refinement complete")
+            print("✓ Airway refinement complete")'''
+            # 1) Carica CT originale
+            ct_img = sitk.ReadImage(mhd_path)
+            ct_np = sitk.GetArrayFromImage(ct_img)
 
+            # 2) Carica maschera airwayfull
+            airway_img = sitk.ReadImage(airway_path)
+            airway_np = sitk.GetArrayFromImage(airway_img)
+            mask_np = (airway_np > 0).astype(np.uint8)
+
+            # 3) Refinement con HU e maschera TS
+            ARM = AirwayRefinementModule(ct_np, mask_np, ct_img.GetSpacing())
+            refined_np = ARM.refine()
+
+            # 4) Salvataggio corretto
+            # QUI: usa airway_img come ref_img, NON refined_np
+            refined_path = os.path.join(step1_dir, f"{scan_name}_airway_refined.nii.gz")
+            ARM.save(refined_path, airway_img)
+
+            # aggiorna il path airway da passare ai passi successivi
+            airway_path = refined_path
+
+            print("✓ Airway refinement complete")
             results['airway_segmentation'] = airway_path
             print(f"\n✓ Segmentation complete: {airway_path}")
+
             
             # ============================================================
             # STEP 2: ENHANCED TRACHEA REMOVAL (NEW METHOD)
@@ -119,7 +140,6 @@ class CompleteAirwayPipeline:
             bronchi_mask, carina_coords, confidence, detector = integrate_with_pipeline(
                 airway_path,
                 spacing=None,
-                precut_z=precut_z,
                 save_output=True
             )
 
@@ -212,7 +232,7 @@ class CompleteAirwayPipeline:
         return results
     
     def process_folder(self, folder_path, pattern="*.mhd", 
-                      fast_segmentation=False, precut_z=390):
+                      fast_segmentation=False):
         """
         Process all MHD files in a folder
         
@@ -220,7 +240,6 @@ class CompleteAirwayPipeline:
             folder_path: Path to folder containing MHD files
             pattern: File pattern to match (default: "*.mhd")
             fast_segmentation: Use fast mode for TotalSegmentator
-            precut_z: Z-level for pre-cut (default 390)
         
         Returns:
             List of results dictionaries
@@ -253,7 +272,6 @@ class CompleteAirwayPipeline:
                 str(mhd_file),
                 scan_name=scan_name,
                 fast_segmentation=fast_segmentation,
-                precut_z=precut_z
             )
             
             all_results.append(result)
@@ -296,7 +314,6 @@ class CompleteAirwayPipeline:
                 trachea = results['trachea_info']
                 f.write(f"   Detection method: {trachea.get('detection_method', 'N/A')}\n")
                 f.write(f"   Confidence: {trachea.get('confidence', 0):.2f}/5.0\n")
-                f.write(f"   Pre-cut applied at: z={trachea.get('precut_z', 'N/A')}\n")
                 if trachea.get('trachea_length_mm'):
                     f.write(f"   Trachea identified: z={trachea['trachea_top_z']} to z={trachea['trachea_bottom_z']}\n")
                     f.write(f"   Trachea length: {trachea['trachea_length_mm']:.1f} mm "
@@ -429,7 +446,6 @@ class CompleteAirwayPipeline:
                     trachea = result['trachea_info']
                     f.write(f"  Carina confidence: {trachea.get('confidence', 0):.2f}/5.0\n")
                     f.write(f"  Method: {trachea.get('detection_method', 'N/A')}\n")
-                    f.write(f"  Pre-cut: z={trachea.get('precut_z', 'N/A')}\n")
                 f.write("\n")
             
             if failed:
@@ -472,7 +488,6 @@ def main():
     BATCH_MODE = True  # Set to True for folder processing, False for single file
     
     # Enhanced trachea removal parameters
-    PRECUT_Z = 390  # Pre-cut level for enhanced method
     
     # Segmentation mode
     FAST_SEGMENTATION = False  # Use fast mode for TotalSegmentator
@@ -493,7 +508,6 @@ def main():
     print(f"\nInput: {INPUT_PATH}")
     print(f"Output: {OUTPUT_DIR}")
     print(f"Trachea removal: Enhanced ultra-conservative method")
-    print(f"Pre-cut level: z={PRECUT_Z}")
     print(f"Fast segmentation: {FAST_SEGMENTATION}")
     print(f"Batch mode: {BATCH_MODE}")
     
@@ -510,7 +524,6 @@ def main():
             INPUT_PATH,
             pattern=FILE_PATTERN,
             fast_segmentation=FAST_SEGMENTATION,
-            precut_z=PRECUT_Z
         )
         
         # Print summary
@@ -538,7 +551,6 @@ def main():
         result = pipeline.process_single_scan(
             INPUT_PATH,
             fast_segmentation=FAST_SEGMENTATION,
-            precut_z=PRECUT_Z
         )
         
         if result['success']:
@@ -553,7 +565,6 @@ def main():
                 print(f"\nEnhanced trachea removal details:")
                 print(f"  Method: {trachea.get('detection_method', 'N/A')}")
                 print(f"  Confidence: {trachea.get('confidence', 0):.2f}/5.0")
-                print(f"  Pre-cut applied at: z={trachea.get('precut_z', 'N/A')}")
                 if trachea.get('trachea_length_mm'):
                     print(f"  Trachea identified: z={trachea['trachea_top_z']} to z={trachea['trachea_bottom_z']}")
                     print(f"  Trachea length: {trachea['trachea_length_mm']:.1f} mm")
