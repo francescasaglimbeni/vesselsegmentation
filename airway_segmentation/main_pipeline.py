@@ -479,7 +479,7 @@ def main():
     # ============================================================
     
     # Input path (file or folder)
-    INPUT_PATH = "/content/vesselsegmentation/airway_segmentation/dataset"
+    INPUT_PATH = "X:/Francesca Saglimbeni/tesi/vesselsegmentation/airway_segmentation/test_data"
     
     # Output directory
     OUTPUT_DIR = "output_results_enhanced"
