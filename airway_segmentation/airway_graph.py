@@ -12,10 +12,7 @@ import json
 from matplotlib.colors import Normalize
 import matplotlib.cm as cm
 from scipy import ndimage
-import itk
 from collections import deque
-from preprocessin_cleaning import SegmentationPreprocessor
-compute_itk_skeleton = SegmentationPreprocessor.compute_itk_skeleton
 
 class AirwayGraphAnalyzer:
     """
@@ -65,7 +62,7 @@ class AirwayGraphAnalyzer:
         # Can be provided by external detector (e.g. test_robust) or loaded from JSON
         self.initial_carina_coords = tuple(carina_coords) if carina_coords is not None else None
         
-    '''def compute_skeleton(self):
+    def compute_skeleton(self):
         """Computes the 3D skeleton of the mask"""
         print("\n=== 3D Skeletonization ===")
         
@@ -74,7 +71,7 @@ class AirwayGraphAnalyzer:
         
         # Apply skeletonize (works for both 2D and 3D)
         print("Computing 3D skeleton (may take a few minutes)...")
-        self.skeleton = compute_itk_skeleton(binary_mask, self.spacing)
+        self.skeleton = skeletonize(binary_mask)
         
         self.skeleton_voxels = np.sum(self.skeleton > 0)
         print(f"Skeleton computed: {self.skeleton_voxels} voxels")
@@ -83,14 +80,7 @@ class AirwayGraphAnalyzer:
         print("Computing distance transform for diameters...")
         self.distance_transform = distance_transform_edt(binary_mask, sampling=self.spacing)
         
-        return self.skeleton'''
-    def _compute_skeleton(self):
-        itk_img = itk.GetImageFromArray(self.mask.astype(np.uint8))
-        itk_img.SetSpacing(self.spacing[::-1])  # z,y,x
-        thinning = itk.BinaryThinningImageFilter3D.New(Input=itk_img)
-        thinning.Update()
-        skel_itk = thinning.GetOutput()
-        return itk.GetArrayFromImage(skel_itk)
+        return self.skeleton
 
     def analyze_connected_components(self):
         """Analyzes connected components of the skeleton"""
@@ -643,7 +633,7 @@ class AirwayGraphAnalyzer:
         print("\n=== WEIBEL GENERATION ASSIGNMENT ===")
         
         if self.carina_node is None:
-            self.identify_carina_with_diameter()
+            self.identify_carina()
         
         if self.graph is None:
             raise ValueError("Build graph first")
@@ -1527,7 +1517,7 @@ class AirwayGraphAnalyzer:
             raise ValueError("Calculate metrics first")
         
         if not hasattr(self, 'carina_node'):
-            self.identify_carina_with_diameter()
+            self.identify_carina()
         
         fig = plt.figure(figsize=(14, 10))
         ax = fig.add_subplot(111, projection='3d')

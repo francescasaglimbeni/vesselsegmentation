@@ -9,7 +9,6 @@ from skimage.morphology import ball, skeletonize
 from skan import Skeleton, summarize
 import networkx as nx
 import os
-import itk
 
 
 class SegmentationPreprocessor:
@@ -49,23 +48,6 @@ class SegmentationPreprocessor:
         # Skeleton and graph for analysis
         self.preliminary_skeleton = None
         self.preliminary_graph = None
-
-    @staticmethod
-    def compute_itk_skeleton(mask_np, spacing):
-        """
-        Skeleton 3D robusto con ITK BinaryThinningImageFilter3D.
-        """
-        # Convert numpy → ITK
-        itk_img = itk.GetImageFromArray(mask_np.astype(np.uint8))
-        itk_img.SetSpacing(spacing[::-1])  # z,y,x order
-
-        ThinningFilter = itk.BinaryThinningImageFilter3D.New(Input=itk_img)
-        ThinningFilter.Update()
-
-        skel_itk = ThinningFilter.GetOutput()
-        skel_np = itk.GetArrayFromImage(skel_itk)
-
-        return skel_np.astype(np.uint8)
     
     def analyze_components(self):
         """Analyzes connected components in the original segmentation"""
@@ -204,8 +186,8 @@ class SegmentationPreprocessor:
         
         binary_mask = (self.cleaned_mask > 0).astype(np.uint8)
         print("Computing 3D skeleton (this may take a few minutes)...")
-        self.preliminary_skeleton = self.compute_itk_skeleton(binary_mask, self.spacing)
-        print(f"Skeleton computed: {np.sum(self.preliminary_skeleton > 0)} voxels")
+        # Use skimage skeletonize (same as AirwayGraphAnalyzer.compute_skeleton)
+        self.preliminary_skeleton = skeletonize(binary_mask)
         print(f"Skeleton computed: {np.sum(self.preliminary_skeleton > 0)} voxels")
         
         # Compute distance transform for diameter estimation

@@ -5,11 +5,11 @@ import datetime
 from pathlib import Path
 import SimpleITK as sitk
 from test_robust import EnhancedCarinaDetector  # Cambiato qui
-
-# Import from existing modules
+from airway_refinement import AirwayRefinementModule  # ← aggiungi questo
 from airwais_seg import segment_airwayfull_from_mhd
 from preprocessin_cleaning import SegmentationPreprocessor
 from airway_graph import AirwayGraphAnalyzer
+from skeleton_cleaner import integrate_skeleton_cleaning
 
 
 class CompleteAirwayPipeline:
@@ -24,8 +24,8 @@ class CompleteAirwayPipeline:
     """
     
     def __init__(self, output_root="output"):
-        self.output_root = output_root
-        os.makedirs(output_root, exist_ok=True)
+        self.output_root = os.path.abspath(output_root)
+        os.makedirs(self.output_root, exist_ok=True)
         
     def process_single_scan(self, mhd_path, scan_name=None, 
                            fast_segmentation=False):
@@ -136,40 +136,28 @@ class CompleteAirwayPipeline:
             # IMPORTANTE: Importa la funzione che salva i grafici
             from test_robust import integrate_with_pipeline
 
-            # Usa integrate_with_pipeline che salva TUTTO (maschera + grafici + JSON)
+            # Usa integrate_with_pipeline passando la directory di output corretta
             bronchi_mask, carina_coords, confidence, detector = integrate_with_pipeline(
                 airway_path,
                 spacing=None,
-                save_output=True
+                save_output=True,
+                output_dir=step2_dir  
             )
 
-            # I file sono già stati salvati nella directory corrente
-            # Spostiamoli nella directory step2_dir
-            import shutil
-            import glob
-
-            # File che integrate_with_pipeline ha creato nella directory corrente
-            files_to_move = [
-                "bronchi_enhanced_conservative.nii.gz",
-                "carina_coordinates.json",
-                "bronchi_graph_with_carina.png",
-                "skeleton_with_carina.png"
-            ]
-
-            for file_name in files_to_move:
-                if os.path.exists(file_name):
-                    dest_path = os.path.join(step2_dir, file_name)
-                    shutil.move(file_name, dest_path)
-                    print(f"  Moved: {file_name} → {dest_path}")
-
-            # Ora rinomina anche la maschera principale
+            # Il file è già salvato come bronchi_enhanced_conservative.nii.gz
+            # Rinominalo in bronchi_enhanced.nii.gz per compatibilità
+            bronchi_original_path = os.path.join(step2_dir, "bronchi_enhanced_conservative.nii.gz")
             bronchi_filename = f"{scan_name}_bronchi_enhanced.nii.gz"
             bronchi_path = os.path.join(step2_dir, bronchi_filename)
-
-            # Carica la maschera salvata da integrate_with_pipeline
-            bronchi_original_path = os.path.join(step2_dir, "bronchi_enhanced_conservative.nii.gz")
+            
             if os.path.exists(bronchi_original_path):
+                # Rimuovi il file di destinazione se esiste già
+                if os.path.exists(bronchi_path):
+                    os.remove(bronchi_path)
+                    print(f"✓ Removed existing: {bronchi_path}")
+                
                 os.rename(bronchi_original_path, bronchi_path)
+                print(f"✓ Renamed to: {bronchi_path}")
 
             # Aggiungi le coordinate della carina ai risultati
             carina_z, carina_y, carina_x = carina_coords
@@ -179,6 +167,7 @@ class CompleteAirwayPipeline:
             print("\n" + "="*80)
             print("STEP 3: PREPROCESSING & COMPONENT RECONNECTION")
             print("="*80)
+            print(f"Loading segmentation from: {os.path.abspath(bronchi_path)}")
             
             preprocessor = SegmentationPreprocessor(bronchi_path)
             
@@ -192,7 +181,14 @@ class CompleteAirwayPipeline:
             
             results['cleaned_mask'] = cleaned_path
             print(f"\n✓ Preprocessing complete: {cleaned_path}")
-            
+            # Dopo preprocessing, PRIMA dell'analisi
+            cleaned_skeleton_path, _ = integrate_skeleton_cleaning(
+                cleaned_path, 
+                step4_dir,
+                min_component_size=20,  # Parametro da calibrare!
+                max_isolation_distance_mm=15.0,
+                min_branch_length_mm=5.0
+            )
             # ============================================================
             # STEP 4: COMPLETE BRONCHIAL TREE ANALYSIS
             # ============================================================

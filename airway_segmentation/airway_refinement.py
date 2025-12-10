@@ -19,7 +19,8 @@ class AirwayRefinementModule:
         return distance_transform_edt(self.mask == 0, sampling=self.spacing)
 
     def _compute_skeleton(self):
-        return SegmentationPreprocessor.compute_itk_skeleton(self.mask, self.spacing)
+        return skeletonize(self.mask.astype(np.uint8))
+    
     def _estimate_air_threshold(self):
         """
         Stima adattiva della HU threshold per distinguere aria/polmone.

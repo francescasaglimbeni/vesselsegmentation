@@ -8,8 +8,7 @@ import networkx as nx
 from collections import defaultdict
 from airway_graph import AirwayGraphAnalyzer
 import json
-from preprocessin_cleaning import SegmentationPreprocessor
-compute_itk_skeleton = SegmentationPreprocessor.compute_itk_skeleton
+
 
 class EnhancedCarinaDetector:
     """
@@ -32,8 +31,7 @@ class EnhancedCarinaDetector:
         self.mask = mask
         self.spacing = spacing
         self.verbose = verbose
-        self.precut_z = self._estimate_precut()
-        print(f"[Dynamic precut] Using z={self.precut_z}")
+        self.precut_z = precut_z
         # Fraction (0..1) of trachea length to remove from the superior/top end
         # Smaller values preserve more trachea near the carina.
         self.trachea_remove_fraction = float(trachea_remove_fraction)
@@ -51,26 +49,6 @@ class EnhancedCarinaDetector:
         self.trachea_length = None
         self.trachea_mask = None
         
-    def _estimate_precut(self):
-        """
-        Stima automatica della regione cervicale da tagliare:
-        cerca la prima comparsa di lumen tracheale ben formato.
-        """
-        mask = self.mask
-        Z = mask.shape[0]
-
-        # Conta voxels airway per ogni slice
-        counts = np.array([np.sum(mask[z] > 0) for z in range(Z)])
-
-        # La parte alta è rumore/cervicale: pochi voxel e discontinui
-        # Trova primo z dove la trachea appare "stabile"
-        for z in range(Z - 1, 0, -1):
-            if counts[z] > 80:   # lumen tracheale tipicamente >80 vox
-                return max(0, z - 5)
-
-        # fallback
-        return int(Z * 0.85)
-
     def detect_carina_robust(self):
         """
         Detection robusta con pre-cut e identificazione trachea
@@ -415,7 +393,7 @@ class EnhancedCarinaDetector:
         
         try:
             binary_mask = (self.cleaned_mask > 0).astype(np.uint8)
-            skeleton = compute_itk_skeleton(binary_mask, self.spacing)
+            skeleton = skeletonize(binary_mask)
             if np.sum(skeleton) < 10:
                 return None
             
@@ -477,7 +455,7 @@ class EnhancedCarinaDetector:
         
         try:
             binary_mask = (self.cleaned_mask > 0).astype(np.uint8)
-            skeleton = compute_itk_skeleton(binary_mask, self.spacing)
+            skeleton = skeletonize(binary_mask)
             if np.sum(skeleton) < 10:
                 return None
             
@@ -684,10 +662,19 @@ class EnhancedCarinaDetector:
         return bronchi_mask
 
 
-def integrate_with_pipeline(mask_path, spacing=None, precut_z=390, save_output=True):
+def integrate_with_pipeline(mask_path, spacing=None, precut_z=390, save_output=True, output_dir=None):
     """
     Integrazione con pipeline
+    
+    Args:
+        mask_path: Path to airway mask
+        spacing: Voxel spacing
+        precut_z: Z-level for precut
+        save_output: Whether to save outputs
+        output_dir: Directory where to save outputs (default: current directory)
     """
+    import os
+    
     sitk_image = sitk.ReadImage(mask_path)
     mask = sitk.GetArrayFromImage(sitk_image)
     
@@ -699,9 +686,14 @@ def integrate_with_pipeline(mask_path, spacing=None, precut_z=390, save_output=T
     bronchi_mask = detector.get_bronchi_mask()
     
     if save_output:
+        # Use output_dir if provided, otherwise current directory
+        if output_dir is None:
+            output_dir = "."
+        os.makedirs(output_dir, exist_ok=True)
+        
         output_sitk = sitk.GetImageFromArray(bronchi_mask.astype(np.uint8))
         output_sitk.CopyInformation(sitk_image)
-        output_path = "bronchi_enhanced_conservative.nii.gz"
+        output_path = os.path.join(output_dir, "bronchi_enhanced_conservative.nii.gz")
         sitk.WriteImage(output_sitk, output_path)
         print(f"\n✓ Saved: {output_path}")
         # Generate graph visualization with carina highlighted (red dot)
@@ -718,7 +710,7 @@ def integrate_with_pipeline(mask_path, spacing=None, precut_z=390, save_output=T
             # Save carina coordinates to JSON
             try:
                 carina_info = graph_analyzer.get_carina_coordinates()
-                json_path = "carina_coordinates.json"
+                json_path = os.path.join(output_dir, "carina_coordinates.json")
                 with open(json_path, 'w') as jf:
                     json.dump(carina_info, jf, indent=2)
                 print(f"✓ Saved carina coordinates JSON: {json_path}")
@@ -742,7 +734,7 @@ def integrate_with_pipeline(mask_path, spacing=None, precut_z=390, save_output=T
                     # If generation assignment fails, still attempt branch plot
                     pass
 
-                graph_img_path = "bronchi_graph_with_carina.png"
+                graph_img_path = os.path.join(output_dir, "bronchi_graph_with_carina.png")
                 # This method draws full branches (continuous lines) and highlights
                 # the carina with a large red marker, producing a much clearer tree
                 # image than the node-scatter view.
@@ -784,7 +776,7 @@ def integrate_with_pipeline(mask_path, spacing=None, precut_z=390, save_output=T
                         ax.set_title('3D Skeleton with Carina Highlighted')
                         ax.legend()
 
-                        skel_img_path = "skeleton_with_carina.png"
+                        skel_img_path = os.path.join(output_dir, "skeleton_with_carina.png")
                         plt.savefig(skel_img_path, dpi=150, bbox_inches='tight')
                         plt.close(fig)
                         print(f"✓ Saved skeleton image with carina: {skel_img_path}")

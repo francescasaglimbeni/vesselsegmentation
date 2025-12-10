@@ -360,7 +360,7 @@ def integrate_skeleton_cleaning(mask_path, output_dir,
     # Compute skeleton
     print("\n[Integration] Computing initial skeleton...")
     binary_mask = (mask > 0).astype(np.uint8)
-    skeleton = SegmentationPreprocessor.compute_itk_skeleton(binary_mask, spacing)
+    skeleton = skeletonize(binary_mask)
     
     # Clean skeleton
     cleaner = SkeletonCleaner(skeleton, mask, spacing)
