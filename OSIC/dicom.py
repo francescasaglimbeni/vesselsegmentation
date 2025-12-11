@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 # cartelle
-dicom_folder = "C:/Users/sagli/Downloads/train"
+dicom_folder = "X:/Francesca Saglimbeni/tesi/train_OSIC_compatible"
 output_folder = "output"
 
 # crea la cartella output se non esiste
