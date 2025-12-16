@@ -413,24 +413,3 @@ class DICOMFilterConverter:
         print(f"• Log dettagliato: {self.output_folder}/conversion_log.txt")
         print(f"• Cartelle rimosse (pochi file): {self.removed_folder}/")
         print("\n" + "=" * 70)
-
-# ========== ESECUZIONE ==========
-if __name__ == "__main__":
-    # Installa le dipendenze se non le hai già:
-    # pip install SimpleITK pydicom numpy
-    
-    # Crea e avvia il processore
-    processor = DICOMFilterConverter()
-    
-    # MODIFICA QUESTI PERCORSI SE NECESSARIO:
-    '''processor.input_folder = "C:/Users/sagli/Downloads/test"  # Cartella con i DICOM
-    processor.output_folder = "filtered_mhd_output"            # Dove salvare i MHD
-    '''
-    # MODIFICA QUESTI PARAMETRI SE NECESSARIO:
-    # processor.MIN_SLICES = 401       # > 400
-    # processor.MIN_SLICE_THICKNESS = 0.7
-    # processor.MIN_XY_RESOLUTION = 0.5
-    # processor.MAX_XY_RESOLUTION = 1.0
-    
-    # Avvia il processo
-    processor.run()

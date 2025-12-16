@@ -5,12 +5,12 @@ import datetime
 from pathlib import Path
 import SimpleITK as sitk
 from test_robust import EnhancedCarinaDetector  # Cambiato qui
-from airway_refinement import AirwayRefinementModule  # ← aggiungi questo
+from airway_refinement import EnhancedAirwayRefinementModule  
 from airwais_seg import segment_airwayfull_from_mhd
 from preprocessin_cleaning import SegmentationPreprocessor
 from airway_graph import AirwayGraphAnalyzer
 from skeleton_cleaner import integrate_skeleton_cleaning
-
+import pandas as pd
 
 class CompleteAirwayPipeline:
     """
@@ -72,58 +72,47 @@ class CompleteAirwayPipeline:
         
         try:
             # ============================================================
-            # STEP 1: SEGMENTATION
+            # STEP 1: SEGMENTATION WITH ENHANCED REFINEMENT
             # ============================================================
             print("\n" + "="*80)
-            print("STEP 1: AIRWAY SEGMENTATION (TotalSegmentator)")
+            print("STEP 1: AIRWAY SEGMENTATION (TotalSegmentator + Enhanced Refinement)")
             print("="*80)
-            
+
             airway_path = segment_airwayfull_from_mhd(
                 mhd_path, 
                 step1_dir, 
                 fast=fast_segmentation
             )
-            
-            from airway_refinement import AirwayRefinementModule
 
-            ''' sitk_img = sitk.ReadImage(airway_path)
-            img_np = sitk.GetArrayFromImage(sitk_img)
-            mask_np = (img_np > 0).astype(np.uint8)  # TS airwayfull mask
+            # ENHANCED REFINEMENT
+            print("\n--- Applying Enhanced Refinement ---")
 
-            ARM = AirwayRefinementModule(img_np, mask_np, sitk_img.GetSpacing())
-            refined_mask = ARM.refine()
-
-            refined_path = os.path.join(step1_dir, f"{scan_name}_airway_refined.nii.gz")
-            ARM.save(refined_path, sitk_img)
-
-            airway_path = refined_path   # <-- sostituisce la segmentazione standard
-            print("✓ Airway refinement complete")'''
-            # 1) Carica CT originale
+            # Carica CT originale
             ct_img = sitk.ReadImage(mhd_path)
             ct_np = sitk.GetArrayFromImage(ct_img)
 
-            # 2) Carica maschera airwayfull
+            # Carica maschera airwayfull
             airway_img = sitk.ReadImage(airway_path)
             airway_np = sitk.GetArrayFromImage(airway_img)
             mask_np = (airway_np > 0).astype(np.uint8)
 
-            # 3) Refinement con HU e maschera TS
-            ARM = AirwayRefinementModule(ct_np, mask_np, ct_img.GetSpacing())
+            # Refinement avanzato
+            ARM = EnhancedAirwayRefinementModule(
+                ct_np, 
+                mask_np, 
+                ct_img.GetSpacing(),
+                verbose=True
+            )
             refined_np = ARM.refine()
 
-            # 4) Salvataggio corretto
-            # QUI: usa airway_img come ref_img, NON refined_np
-            refined_path = os.path.join(step1_dir, f"{scan_name}_airway_refined.nii.gz")
+            # Salvataggio
+            refined_path = os.path.join(step1_dir, f"{scan_name}_airway_refined_enhanced.nii.gz")
             ARM.save(refined_path, airway_img)
 
-            # aggiorna il path airway da passare ai passi successivi
             airway_path = refined_path
-
-            print("✓ Airway refinement complete")
             results['airway_segmentation'] = airway_path
-            print(f"\n✓ Segmentation complete: {airway_path}")
+            print(f"\n✓ Enhanced segmentation complete: {airway_path}")
 
-            
             # ============================================================
             # STEP 2: ENHANCED TRACHEA REMOVAL (NEW METHOD)
             # ============================================================
@@ -211,6 +200,34 @@ class CompleteAirwayPipeline:
             
             print(f"\n✓ Analysis complete!")
             
+            # ============================================================
+            # STEP 5: ADVANCED CLINICAL METRICS (NEW)
+            # ============================================================
+            print("\n" + "="*80)
+            print("STEP 5: ADVANCED CLINICAL METRICS")
+            print("="*80)
+
+            try:
+                # Calcola metriche avanzate
+                advanced_metrics = analyzer.compute_advanced_metrics()
+                
+                # Salva metriche
+                analyzer.save_advanced_metrics(step4_dir)
+                
+                # Genera plot
+                analyzer.plot_advanced_metrics(
+                    save_path=os.path.join(step4_dir, "advanced_metrics_summary.png")
+                )
+                
+                results['advanced_metrics'] = advanced_metrics
+                
+                print("\n✓ Advanced metrics computed and saved")
+                
+            except Exception as e:
+                print(f"\n⚠ Warning: Could not compute advanced metrics: {e}")
+                import traceback
+                traceback.print_exc()
+
             # ============================================================
             # GENERATE SUMMARY REPORT
             # ============================================================
@@ -378,7 +395,64 @@ class CompleteAirwayPipeline:
                     f.write(f"  Mean observed ratio: {mean_ratio:.3f}\n")
                     f.write(f"  Weibel theoretical:  {weibel_theoretical:.3f}\n")
                     f.write(f"  Difference:          {abs(mean_ratio - weibel_theoretical):.3f}\n")
-            
+                if hasattr(analyzer, 'advanced_metrics') and analyzer.advanced_metrics is not None:
+                    f.write("="*80 + "\n")
+                    f.write("ADVANCED CLINICAL METRICS\n")
+                    f.write("="*80 + "\n\n")
+                    
+                    metrics = analyzer.advanced_metrics
+                    
+                    f.write(f"Total airway volume: {metrics['total_volume_mm3']:.2f} mm³\n\n")
+                    
+                    f.write("Peripheral vs Central Analysis:\n")
+                    f.write(f"  Central (Gen 0-10):\n")
+                    f.write(f"    Volume: {metrics['central_volume_mm3']:.2f} mm³\n")
+                    f.write(f"    Branches: {metrics['central_branch_count']}\n")
+                    f.write(f"  Intermediate (Gen 11-15):\n")
+                    f.write(f"    Volume: {metrics['intermediate_volume_mm3']:.2f} mm³\n")
+                    f.write(f"    Branches: {metrics['intermediate_branch_count']}\n")
+                    f.write(f"  Peripheral (Gen >15):\n")
+                    f.write(f"    Volume: {metrics['peripheral_volume_mm3']:.2f} mm³\n")
+                    f.write(f"    Branches: {metrics['peripheral_branch_count']}\n")
+                    f.write(f"  Peripheral/Central Volume Ratio: {metrics['peripheral_to_central_ratio']:.3f}\n")
+                    
+                    # Interpretazione
+                    if metrics['peripheral_to_central_ratio'] < 0.2:
+                        f.write(f"    ⚠ LOW P/C ratio - suggests peripheral airway loss (fibrosis marker)\n")
+                    elif metrics['peripheral_to_central_ratio'] > 0.6:
+                        f.write(f"    ✓ HIGH P/C ratio - well-preserved peripheral airways\n")
+                    else:
+                        f.write(f"    ✓ Normal P/C ratio range\n")
+                    
+                    f.write(f"\n")
+                    
+                    if 'mean_tortuosity' in metrics and not pd.isna(metrics['mean_tortuosity']):
+                        f.write(f"Airway Tortuosity:\n")
+                        f.write(f"  Mean: {metrics['mean_tortuosity']:.3f}\n")
+                        f.write(f"  Median: {metrics['median_tortuosity']:.3f}\n")
+                        if metrics['mean_tortuosity'] > 1.5:
+                            f.write(f"    ⚠ HIGH tortuosity - suggests airway distortion (fibrosis)\n")
+                        else:
+                            f.write(f"    ✓ Normal tortuosity range\n")
+                        f.write(f"\n")
+                    
+                    if 'symmetry_index' in metrics and not pd.isna(metrics['symmetry_index']):
+                        f.write(f"Left-Right Symmetry:\n")
+                        f.write(f"  Left side branches: {metrics['left_side_branch_count']}\n")
+                        f.write(f"  Right side branches: {metrics['right_side_branch_count']}\n")
+                        f.write(f"  Symmetry index: {metrics['symmetry_index']:.3f}\n")
+                        if metrics['symmetry_index'] < 0.7:
+                            f.write(f"    ⚠ ASYMMETRIC - suggests unilateral disease\n")
+                        else:
+                            f.write(f"    ✓ Symmetric branching pattern\n")
+                        f.write(f"\n")
+                    
+                    f.write(f"Generation Coverage: {metrics['generation_coverage']*100:.1f}%\n")
+                    if metrics['missing_generations']:
+                        f.write(f"  Missing generations: {len(metrics['missing_generations'])}\n")
+                    
+                    f.write("\n")
+
             f.write("\n" + "="*80 + "\n")
             f.write("ENHANCED TRACHEA REMOVAL METHOD\n")
             f.write("="*80 + "\n\n")
@@ -475,7 +549,7 @@ def main():
     # ============================================================
     
     # Input path (file or folder)
-    INPUT_PATH = "X:/Francesca Saglimbeni/tesi/vesselsegmentation/airway_segmentation/test_data"
+    INPUT_PATH = r"X:/Francesca Saglimbeni/tesi/vesselsegmentation/airway_segmentation/test_data"
     
     # Output directory
     OUTPUT_DIR = "output_results_enhanced"

@@ -929,7 +929,435 @@ class AirwayGraphAnalyzer:
             print(f"Difference: {abs(mean_ratio - weibel_expected):.3f}")
         
         return self.weibel_analysis_df, self.tapering_ratios_df
-    
+
+    def compute_advanced_metrics(self):
+        """
+        Calcola metriche avanzate per correlazione con FVC/percent:
+        1. Distribuzione volume per generazione (centrale vs periferico)
+        2. Airway-to-vessel ratio (se disponibile segmentazione vascolare)
+        3. Peripheral vs central airway ratio
+        4. Tortuosità media delle vie aeree
+        5. Wall thickness estimation
+        """
+        print("\n" + "="*70)
+        print("ADVANCED CLINICAL METRICS CALCULATION")
+        print("="*70)
+        
+        if not hasattr(self, 'branch_metrics_df'):
+            raise ValueError("Run merge_branch_metrics() first")
+        
+        if 'generation' not in self.branch_metrics_df.columns:
+            raise ValueError("Run assign_generations_weibel() first")
+        
+        metrics = {}
+        
+        # ================================================================
+        # METRIC 1: Volume Distribution by Generation
+        # ================================================================
+        print("\n[Metric 1] Volume Distribution by Generation...")
+        
+        volume_per_generation = self.branch_metrics_df.groupby('generation')['volume_mm3'].sum()
+        
+        # Statistiche generazioni
+        metrics['volume_per_generation'] = volume_per_generation.to_dict()
+        metrics['total_volume_mm3'] = volume_per_generation.sum()
+        
+        # Identifica generazioni "mancanti" (gap nella distribuzione)
+        all_generations = set(range(int(self.branch_metrics_df['generation'].min()), 
+                                    int(self.branch_metrics_df['generation'].max()) + 1))
+        present_generations = set(volume_per_generation.index.astype(int))
+        missing_generations = sorted(all_generations - present_generations)
+        
+        metrics['missing_generations'] = missing_generations
+        metrics['generation_coverage'] = len(present_generations) / len(all_generations) if all_generations else 0
+        
+        print(f"  Total airway volume: {metrics['total_volume_mm3']:.2f} mm³")
+        print(f"  Generations covered: {len(present_generations)}/{len(all_generations)} "
+            f"({metrics['generation_coverage']*100:.1f}%)")
+        
+        if missing_generations:
+            print(f"  ⚠ Missing generations: {missing_generations[:10]}{'...' if len(missing_generations) > 10 else ''}")
+        
+        # ================================================================
+        # METRIC 2: Peripheral vs Central Airway Ratio
+        # ================================================================
+        print("\n[Metric 2] Peripheral vs Central Airway Analysis...")
+        
+        # Definizione:
+        # - Central: generazioni 0-10 (trachea + bronchi principali/lobari)
+        # - Intermediate: generazioni 11-15 (bronchi segmentali)
+        # - Peripheral: generazioni >15 (bronchioli)
+        
+        central_branches = self.branch_metrics_df[self.branch_metrics_df['generation'] <= 10]
+        intermediate_branches = self.branch_metrics_df[
+            (self.branch_metrics_df['generation'] > 10) & 
+            (self.branch_metrics_df['generation'] <= 15)
+        ]
+        peripheral_branches = self.branch_metrics_df[self.branch_metrics_df['generation'] > 15]
+        
+        central_volume = central_branches['volume_mm3'].sum()
+        intermediate_volume = intermediate_branches['volume_mm3'].sum()
+        peripheral_volume = peripheral_branches['volume_mm3'].sum()
+        
+        # Ratio chiave: peripheral/central
+        # Valori attesi:
+        # - Polmone sano: 0.3-0.6 (periferia ha meno volume ma più rami)
+        # - Fibrosi avanzata: <0.2 (perdita preferenziale vie periferiche)
+        p_c_ratio = peripheral_volume / central_volume if central_volume > 0 else 0
+        
+        metrics['central_volume_mm3'] = central_volume
+        metrics['intermediate_volume_mm3'] = intermediate_volume
+        metrics['peripheral_volume_mm3'] = peripheral_volume
+        metrics['peripheral_to_central_ratio'] = p_c_ratio
+        
+        # Branch count ratios
+        metrics['central_branch_count'] = len(central_branches)
+        metrics['intermediate_branch_count'] = len(intermediate_branches)
+        metrics['peripheral_branch_count'] = len(peripheral_branches)
+        metrics['peripheral_to_central_branch_ratio'] = (
+            len(peripheral_branches) / len(central_branches) if len(central_branches) > 0 else 0
+        )
+        
+        print(f"  Central airways (gen 0-10):")
+        print(f"    Volume: {central_volume:.2f} mm³")
+        print(f"    Branches: {len(central_branches)}")
+        print(f"  Intermediate airways (gen 11-15):")
+        print(f"    Volume: {intermediate_volume:.2f} mm³")
+        print(f"    Branches: {len(intermediate_branches)}")
+        print(f"  Peripheral airways (gen >15):")
+        print(f"    Volume: {peripheral_volume:.2f} mm³")
+        print(f"    Branches: {len(peripheral_branches)}")
+        print(f"  Peripheral/Central volume ratio: {p_c_ratio:.3f}")
+        print(f"  Peripheral/Central branch ratio: {metrics['peripheral_to_central_branch_ratio']:.3f}")
+        
+        # Interpretazione
+        if p_c_ratio < 0.2:
+            print(f"  ⚠ Low P/C ratio suggests peripheral airway loss (fibrosis marker)")
+        elif p_c_ratio > 0.6:
+            print(f"  ✓ High P/C ratio suggests well-preserved peripheral airways")
+        
+        # ================================================================
+        # METRIC 3: Airway Tortuosity
+        # ================================================================
+        print("\n[Metric 3] Airway Tortuosity Analysis...")
+        
+        # Tortuosità = lunghezza effettiva / distanza euclidea
+        # Vie aeree sane: ~1.1-1.3
+        # Vie aeree con distorsione fibrotica: >1.5
+        
+        tortuosity_values = []
+        
+        for idx, row in self.branch_metrics_df.iterrows():
+            if pd.isna(row.get('distance_from_carina_proximal_mm')) or pd.isna(row.get('distance_from_carina_distal_mm')):
+                continue
+            
+            branch_length = row['length_mm']
+            
+            # Distanza euclidea tra proximal e distal node
+            try:
+                proximal_node = int(row['proximal_node'])
+                distal_node = int(row['distal_node'])
+                
+                pos_prox = np.array(self.graph.nodes[proximal_node]['pos'])
+                pos_dist = np.array(self.graph.nodes[distal_node]['pos'])
+                
+                # Converti in mm
+                euclidean_dist = np.linalg.norm(
+                    (pos_dist - pos_prox) * np.array([self.spacing[2], self.spacing[1], self.spacing[0]])
+                )
+                
+                if euclidean_dist > 0.5:  # Evita divisione per zero
+                    tortuosity = branch_length / euclidean_dist
+                    if 0.8 < tortuosity < 5.0:  # Valori plausibili
+                        tortuosity_values.append(tortuosity)
+            
+            except Exception:
+                continue
+        
+        if tortuosity_values:
+            metrics['mean_tortuosity'] = np.mean(tortuosity_values)
+            metrics['median_tortuosity'] = np.median(tortuosity_values)
+            metrics['std_tortuosity'] = np.std(tortuosity_values)
+            
+            print(f"  Mean tortuosity: {metrics['mean_tortuosity']:.3f}")
+            print(f"  Median tortuosity: {metrics['median_tortuosity']:.3f}")
+            
+            if metrics['mean_tortuosity'] > 1.5:
+                print(f"  ⚠ High tortuosity suggests airway distortion (fibrosis)")
+            else:
+                print(f"  ✓ Normal tortuosity range")
+        else:
+            metrics['mean_tortuosity'] = np.nan
+            print("  Could not calculate tortuosity (insufficient data)")
+        
+        # ================================================================
+        # METRIC 4: Airway Wall Thickness Estimation
+        # ================================================================
+        print("\n[Metric 4] Airway Wall Thickness Estimation...")
+        
+        # Stima grossolana usando distance transform
+        # Wall thickness ≈ differenza tra diametro esterno e lume
+        # Limitazione: richiede sia segmentazione lume che wall
+        
+        if hasattr(self, 'distance_transform') and self.distance_transform is not None:
+            # Per ora, usiamo il rapporto diametro/lunghezza come proxy
+            # Vie aeree ispessite hanno diametro maggiore a parità di lunghezza
+            
+            self.branch_metrics_df['diameter_to_length_ratio'] = (
+                self.branch_metrics_df['diameter_mean_mm'] / 
+                self.branch_metrics_df['length_mm']
+            )
+            
+            metrics['mean_diameter_to_length_ratio'] = self.branch_metrics_df['diameter_to_length_ratio'].mean()
+            
+            print(f"  Mean diameter/length ratio: {metrics['mean_diameter_to_length_ratio']:.3f}")
+            print(f"  Note: True wall thickness requires additional segmentation")
+        else:
+            metrics['mean_diameter_to_length_ratio'] = np.nan
+            print("  Wall thickness estimation not available (distance transform missing)")
+        
+        # ================================================================
+        # METRIC 5: Generational Symmetry Index
+        # ================================================================
+        print("\n[Metric 5] Generational Symmetry Analysis...")
+        
+        # Simmetria = quanto sono bilanciati i due lati dell'albero bronchiale
+        # In fibrosi asimmetrica, un lato può essere più colpito
+        
+        if hasattr(self, 'carina_node') and self.carina_node is not None:
+            # Identifica rami sinistro/destro dalla carina
+            carina_neighbors = list(self.graph.neighbors(self.carina_node))
+            
+            if len(carina_neighbors) >= 2:
+                # Usa coordinate per distinguere left/right
+                neighbor_positions = [self.graph.nodes[n]['pos'] for n in carina_neighbors]
+                
+                # Assumendo che X aumenta verso destra
+                x_coords = [pos[2] for pos in neighbor_positions]
+                
+                if len(set(x_coords)) > 1:  # Diversi valori X
+                    left_side_nodes = []
+                    right_side_nodes = []
+                    
+                    carina_x = self.graph.nodes[self.carina_node]['pos'][2]
+                    
+                    for node, pos in zip(carina_neighbors, neighbor_positions):
+                        if pos[2] < carina_x:
+                            left_side_nodes.append(node)
+                        else:
+                            right_side_nodes.append(node)
+                    
+                    # Conta descendants per ogni lato
+                    from collections import deque
+                    
+                    def count_descendants(start_nodes):
+                        visited = set(start_nodes)
+                        queue = deque(start_nodes)
+                        count = 0
+                        
+                        while queue:
+                            node = queue.popleft()
+                            count += 1
+                            for neighbor in self.graph.neighbors(node):
+                                if neighbor not in visited and neighbor != self.carina_node:
+                                    visited.add(neighbor)
+                                    queue.append(neighbor)
+                        return count
+                    
+                    left_count = count_descendants(left_side_nodes)
+                    right_count = count_descendants(right_side_nodes)
+                    
+                    # Symmetry index = min/max (0-1, dove 1 = perfettamente simmetrico)
+                    symmetry_index = min(left_count, right_count) / max(left_count, right_count) if max(left_count, right_count) > 0 else 0
+                    
+                    metrics['left_side_branch_count'] = left_count
+                    metrics['right_side_branch_count'] = right_count
+                    metrics['symmetry_index'] = symmetry_index
+                    
+                    print(f"  Left side branches: {left_count}")
+                    print(f"  Right side branches: {right_count}")
+                    print(f"  Symmetry index: {symmetry_index:.3f}")
+                    
+                    if symmetry_index < 0.7:
+                        print(f"  ⚠ Asymmetric branching suggests unilateral disease")
+                else:
+                    metrics['symmetry_index'] = np.nan
+                    print("  Could not distinguish left/right (coordinates issue)")
+            else:
+                metrics['symmetry_index'] = np.nan
+                print("  Insufficient branches from carina for symmetry analysis")
+        else:
+            metrics['symmetry_index'] = np.nan
+            print("  Carina not identified, cannot compute symmetry")
+        
+        # ================================================================
+        # SAVE METRICS
+        # ================================================================
+        self.advanced_metrics = metrics
+        
+        print("\n" + "="*70)
+        print("ADVANCED METRICS SUMMARY")
+        print("="*70)
+        print(f"Total Volume: {metrics['total_volume_mm3']:.2f} mm³")
+        print(f"Peripheral/Central Ratio: {metrics['peripheral_to_central_ratio']:.3f}")
+        print(f"Mean Tortuosity: {metrics.get('mean_tortuosity', 'N/A')}")
+        print(f"Symmetry Index: {metrics.get('symmetry_index', 'N/A')}")
+        print(f"Generation Coverage: {metrics['generation_coverage']*100:.1f}%")
+        
+        return metrics
+
+
+    def save_advanced_metrics(self, output_dir):
+        """
+        Salva metriche avanzate in CSV e JSON
+        """
+        import os
+        import json
+        
+        if not hasattr(self, 'advanced_metrics'):
+            raise ValueError("Run compute_advanced_metrics() first")
+        
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # 1. Salva volume per generazione
+        volume_df = pd.DataFrame([
+            {'generation': gen, 'volume_mm3': vol}
+            for gen, vol in self.advanced_metrics['volume_per_generation'].items()
+        ])
+        volume_path = os.path.join(output_dir, "volume_per_generation.csv")
+        volume_df.to_csv(volume_path, index=False)
+        print(f"✓ Saved: {volume_path}")
+        
+        # 2. Salva metrics summary JSON
+        metrics_json = {k: v for k, v in self.advanced_metrics.items() 
+                        if k != 'volume_per_generation'}  # Già salvato in CSV
+        
+        json_path = os.path.join(output_dir, "advanced_metrics.json")
+        with open(json_path, 'w') as f:
+            json.dump(metrics_json, f, indent=2, default=str)
+        print(f"✓ Saved: {json_path}")
+        
+        # 3. Salva peripheral/central breakdown CSV
+        pc_breakdown = pd.DataFrame([
+            {
+                'region': 'Central (Gen 0-10)',
+                'volume_mm3': self.advanced_metrics['central_volume_mm3'],
+                'branch_count': self.advanced_metrics['central_branch_count']
+            },
+            {
+                'region': 'Intermediate (Gen 11-15)',
+                'volume_mm3': self.advanced_metrics['intermediate_volume_mm3'],
+                'branch_count': self.advanced_metrics['intermediate_branch_count']
+            },
+            {
+                'region': 'Peripheral (Gen >15)',
+                'volume_mm3': self.advanced_metrics['peripheral_volume_mm3'],
+                'branch_count': self.advanced_metrics['peripheral_branch_count']
+            }
+        ])
+        
+        pc_path = os.path.join(output_dir, "peripheral_central_breakdown.csv")
+        pc_breakdown.to_csv(pc_path, index=False)
+        print(f"✓ Saved: {pc_path}")
+        
+        return metrics_json
+
+
+    def plot_advanced_metrics(self, save_path=None):
+        """
+        Visualizzazione delle metriche avanzate
+        """
+        if not hasattr(self, 'advanced_metrics'):
+            raise ValueError("Run compute_advanced_metrics() first")
+        
+        import matplotlib.pyplot as plt
+        
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        
+        # Plot 1: Volume per generazione (log scale)
+        ax1 = axes[0, 0]
+        volume_data = self.advanced_metrics['volume_per_generation']
+        generations = sorted(volume_data.keys())
+        volumes = [volume_data[g] for g in generations]
+        
+        ax1.bar(generations, volumes, alpha=0.7, edgecolor='black')
+        ax1.set_xlabel('Generation')
+        ax1.set_ylabel('Volume (mm³)')
+        ax1.set_title('Volume Distribution by Generation')
+        ax1.set_yscale('log')
+        ax1.grid(True, alpha=0.3, axis='y')
+        
+        # Plot 2: Peripheral vs Central
+        ax2 = axes[0, 1]
+        regions = ['Central\n(Gen 0-10)', 'Intermediate\n(Gen 11-15)', 'Peripheral\n(Gen >15)']
+        volumes_pc = [
+            self.advanced_metrics['central_volume_mm3'],
+            self.advanced_metrics['intermediate_volume_mm3'],
+            self.advanced_metrics['peripheral_volume_mm3']
+        ]
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+        
+        ax2.bar(regions, volumes_pc, color=colors, alpha=0.7, edgecolor='black')
+        ax2.set_ylabel('Volume (mm³)')
+        ax2.set_title('Peripheral vs Central Airway Volume')
+        ax2.grid(True, alpha=0.3, axis='y')
+        
+        # Aggiungi ratio
+        p_c_ratio = self.advanced_metrics['peripheral_to_central_ratio']
+        ax2.text(0.5, 0.95, f'P/C Ratio: {p_c_ratio:.3f}', 
+                transform=ax2.transAxes, ha='center', va='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8),
+                fontsize=11, fontweight='bold')
+        
+        # Plot 3: Branch count per region
+        ax3 = axes[1, 0]
+        branch_counts = [
+            self.advanced_metrics['central_branch_count'],
+            self.advanced_metrics['intermediate_branch_count'],
+            self.advanced_metrics['peripheral_branch_count']
+        ]
+        
+        ax3.bar(regions, branch_counts, color=colors, alpha=0.7, edgecolor='black')
+        ax3.set_ylabel('Number of Branches')
+        ax3.set_title('Branch Count by Region')
+        ax3.grid(True, alpha=0.3, axis='y')
+        
+        # Plot 4: Summary metrics
+        ax4 = axes[1, 1]
+        ax4.axis('off')
+        
+        summary_text = f"""
+    ADVANCED METRICS SUMMARY
+
+    Total Airway Volume: {self.advanced_metrics['total_volume_mm3']:.2f} mm³
+
+    Peripheral/Central Ratio: {p_c_ratio:.3f}
+    {'  ⚠ LOW - Peripheral loss' if p_c_ratio < 0.2 else '  ✓ Normal range' if p_c_ratio < 0.6 else '  ✓ Well-preserved'}
+
+    Mean Tortuosity: {self.advanced_metrics.get('mean_tortuosity', 'N/A')}
+    {'  ⚠ HIGH - Airway distortion' if isinstance(self.advanced_metrics.get('mean_tortuosity'), float) and self.advanced_metrics.get('mean_tortuosity') > 1.5 else '  ✓ Normal' if isinstance(self.advanced_metrics.get('mean_tortuosity'), float) else ''}
+
+    Symmetry Index: {self.advanced_metrics.get('symmetry_index', 'N/A')}
+    {'  ⚠ ASYMMETRIC - Unilateral disease?' if isinstance(self.advanced_metrics.get('symmetry_index'), float) and self.advanced_metrics.get('symmetry_index') < 0.7 else '  ✓ Symmetric' if isinstance(self.advanced_metrics.get('symmetry_index'), float) else ''}
+
+    Generation Coverage: {self.advanced_metrics['generation_coverage']*100:.1f}%
+
+    Missing Generations: {len(self.advanced_metrics['missing_generations'])}
+    """
+        
+        ax4.text(0.1, 0.9, summary_text, transform=ax4.transAxes,
+                fontsize=11, verticalalignment='top', fontfamily='monospace',
+                bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.3))
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"✓ Saved advanced metrics plot: {save_path}")
+        
+        plt.show()
+        
+        return fig
     def calculate_distances_from_carina(self):
         """
         Calculates cumulative PATH distances from the carina to each endpoint.
