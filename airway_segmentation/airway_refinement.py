@@ -48,13 +48,27 @@ class EnhancedAirwayRefinementModule:
         
         # Usa Otsu multi-level per identificare 3 regioni
         try:
+            # threshold_multiotsu(classes=3) restituisce 2 soglie [t0, t1]
             thresholds = threshold_multiotsu(flat, classes=3)
-            
-            # Aggiungi margini di sicurezza
-            central_threshold = min(thresholds[0] + 100, -700)      # Più conservativo
-            intermediate_threshold = min(thresholds[1] + 80, -600)  # Vie aeree medie
-            peripheral_threshold = min(thresholds[2] + 60, -500)    # Vie periferiche
-            
+
+            # Verifica che abbiamo almeno 2 soglie
+            if len(thresholds) >= 2:
+                # Aggiungi margini di sicurezza usando le soglie disponibili
+                t0, t1 = thresholds[0], thresholds[1]
+                central_threshold = min(t0 + 100, -700)      # Più conservativo
+                intermediate_threshold = min(t1 + 80, -600)  # Vie aeree medie
+                # Periferico: usa la seconda soglia come base (non esiste thresholds[2])
+                peripheral_threshold = min(t1 + 60, -500)    # Vie periferiche
+            elif len(thresholds) == 1:
+                # Solo una soglia disponibile, usa valori derivati
+                t0 = thresholds[0]
+                central_threshold = min(t0 + 100, -700)
+                intermediate_threshold = -750
+                peripheral_threshold = -650
+            else:
+                # Nessuna soglia valida, usa defaults
+                raise ValueError("No valid thresholds returned")
+
         except Exception as e:
             if self.verbose:
                 print(f"  Warning: Otsu failed ({e}), using defaults")
