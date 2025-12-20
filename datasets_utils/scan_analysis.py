@@ -12,7 +12,7 @@ from pathlib import Path
 
 class CTScanQualityAnalyzer:
     """
-    Analizza caratteristiche delle CT scan per determinare perché la pipeline
+    Analizza caratteristiche delle CT scan per determinare perchÃ© la pipeline
     funziona su alcuni dataset (CARVE14) ma fallisce su altri (OSIC).
     
     Focus: caratteristiche che influenzano la robustezza della segmentazione airways
@@ -102,7 +102,7 @@ class CTScanQualityAnalyzer:
             # FEATURE 1: IMAGING CHARACTERISTICS (CT quality)
             # ============================================================
             
-            # 1.1 Slice thickness (importante per continuità 3D)
+            # 1.1 Slice thickness (importante per continuitÃ  3D)
             result['slice_thickness_mm'] = spacing[2]
             
             # 1.2 In-plane resolution
@@ -143,7 +143,7 @@ class CTScanQualityAnalyzer:
                     result['airway_z_extent_slices'] = 0
                     result['airway_z_extent_mm'] = 0.0
                 
-                # 2.3 Connettività (numero di componenti connesse)
+                # 2.3 ConnettivitÃ  (numero di componenti connesse)
                 labeled, num_components = label(seg_arr > 0)
                 result['num_connected_components'] = int(num_components)
                 
@@ -165,7 +165,7 @@ class CTScanQualityAnalyzer:
                         result['second_component_voxels'] = 0
                         result['fragmentation_ratio'] = 0.0
                 
-                # 2.5 Analisi slice-by-slice (per discontinuità trachea)
+                # 2.5 Analisi slice-by-slice (per discontinuitÃ  trachea)
                 slice_areas = []
                 for z in range(seg_arr.shape[0]):
                     slice_2d = seg_arr[z, :, :]
@@ -188,7 +188,7 @@ class CTScanQualityAnalyzer:
                     
                     result['trachea_gaps'] = gaps
                     
-                    # Variabilità area cross-section
+                    # VariabilitÃ  area cross-section
                     active_areas = slice_areas[slice_areas > 0]
                     result['slice_area_mean'] = float(np.mean(active_areas))
                     result['slice_area_std'] = float(np.std(active_areas))
@@ -199,7 +199,7 @@ class CTScanQualityAnalyzer:
                     result['slice_area_std'] = 0.0
                     result['slice_area_cv'] = 0.0
                 
-                # 2.6 Skeleton analysis (per complessità topologica)
+                # 2.6 Skeleton analysis (per complessitÃ  topologica)
                 try:
                     binary_mask = (seg_arr > 0).astype(np.uint8)
                     skeleton = skeletonize(binary_mask)
@@ -262,12 +262,12 @@ class CTScanQualityAnalyzer:
             # 4.2 Dynamic range (spread tra tessuti)
             result['dynamic_range'] = float(result['hu_max'] - result['hu_min'])
             
-            print(f"    ✓ Analysis complete")
+            print(f"    âœ“ Analysis complete")
             
             return result
             
         except Exception as e:
-            print(f"    ✗ Error analyzing {scan_path}: {e}")
+            print(f"    âœ— Error analyzing {scan_path}: {e}")
             import traceback
             traceback.print_exc()
             return None
@@ -288,7 +288,7 @@ class CTScanQualityAnalyzer:
         # Salva CSV
         good_df.to_csv(self.output_dir / "good_scans_features.csv", index=False)
         bad_df.to_csv(self.output_dir / "bad_scans_features.csv", index=False)
-        print(f"\n✓ Saved CSVs: {self.output_dir}")
+        print(f"\nâœ“ Saved CSVs: {self.output_dir}")
         
         # Report statistico
         report_path = self.output_dir / "comparative_report.txt"
@@ -329,15 +329,15 @@ class CTScanQualityAnalyzer:
                     diff_pct = abs(bad_mean - good_mean) / good_mean * 100 if good_mean != 0 else 0
                     
                     f.write(f"{label}:\n")
-                    f.write(f"  Good scans: {good_mean:.3f} ± {good_std:.3f}\n")
-                    f.write(f"  Bad scans:  {bad_mean:.3f} ± {bad_std:.3f}\n")
+                    f.write(f"  Good scans: {good_mean:.3f} Â± {good_std:.3f}\n")
+                    f.write(f"  Bad scans:  {bad_mean:.3f} Â± {bad_std:.3f}\n")
                     f.write(f"  Difference: {diff_pct:.1f}%\n")
                     
                     # Valutazione
                     if is_problem and bad_mean > good_mean * 1.5:
-                        f.write(f"  ⚠️ CRITICAL: Bad scans show {diff_pct:.0f}% higher {label}\n")
+                        f.write(f"  âš ï¸ CRITICAL: Bad scans show {diff_pct:.0f}% higher {label}\n")
                     elif diff_pct > 30:
-                        f.write(f"  ⚠️ WARNING: Large difference ({diff_pct:.0f}%)\n")
+                        f.write(f"  âš ï¸ WARNING: Large difference ({diff_pct:.0f}%)\n")
                     
                     f.write("\n")
             
@@ -351,31 +351,34 @@ class CTScanQualityAnalyzer:
             # Check slice thickness
             if bad_df['slice_thickness_mm'].mean() > good_df['slice_thickness_mm'].mean() * 1.3:
                 recommendations.append(
-                    "• SLICE THICKNESS: Bad scans have thicker slices → may cause "
+                    "â€¢ SLICE THICKNESS: Bad scans have thicker slices â†’ may cause "
                     "discontinuities in skeleton. Consider interpolation or "
                     "adjusting skeletonization parameters."
                 )
             
             # Check connected components
-            if bad_df['num_connected_components'].mean() > good_df['num_connected_components'].mean() + 2:
-                recommendations.append(
-                    "• FRAGMENTATION: Bad scans show more disconnected components → "
-                    "increase reconnection distance or improve trachea removal method."
-                )
+            if 'num_connected_components' in bad_df.columns and 'num_connected_components' in good_df.columns:
+                if bad_df['num_connected_components'].mean() > good_df['num_connected_components'].mean() + 2:
+                    recommendations.append(
+                        "â€¢ FRAGMENTATION: Bad scans show more disconnected components â†’ "
+                        "increase reconnection distance or improve trachea removal method."
+                    )
             
             # Check HU distribution
-            if bad_df['airway_hu_above_minus_700'].mean() > good_df['airway_hu_above_minus_700'].mean() * 2:
-                recommendations.append(
-                    "• HU THRESHOLD: Bad scans have higher HU values in airways → "
-                    "adapt thresholding strategy (adaptive thresholds or multi-Otsu)."
-                )
+            if 'airway_hu_above_minus_700' in bad_df.columns and 'airway_hu_above_minus_700' in good_df.columns:
+                if bad_df['airway_hu_above_minus_700'].mean() > good_df['airway_hu_above_minus_700'].mean() * 2:
+                    recommendations.append(
+                        "â€¢ HU THRESHOLD: Bad scans have higher HU values in airways â†’ "
+                        "adapt thresholding strategy (adaptive thresholds or multi-Otsu)."
+                    )
             
             # Check gaps
-            if bad_df['trachea_gaps'].mean() > 1:
-                recommendations.append(
-                    "• TRACHEA GAPS: Bad scans show discontinuities → "
-                    "implement gap-filling preprocessing step."
-                )
+            if 'trachea_gaps' in bad_df.columns and 'trachea_gaps' in good_df.columns:
+                if bad_df['trachea_gaps'].mean() > 1:
+                    recommendations.append(
+                        "â€¢ TRACHEA GAPS: Bad scans show discontinuities â†’ "
+                        "implement gap-filling preprocessing step."
+                    )
             
             if recommendations:
                 for rec in recommendations:
@@ -383,7 +386,7 @@ class CTScanQualityAnalyzer:
             else:
                 f.write("No critical issues detected in the comparison.\n")
         
-        print(f"✓ Report saved: {report_path}")
+        print(f"âœ“ Report saved: {report_path}")
     
     def plot_comparative_analysis(self):
         """Genera grafici comparativi"""
@@ -393,86 +396,62 @@ class CTScanQualityAnalyzer:
         good_df = pd.DataFrame(self.good_results)
         bad_df = pd.DataFrame(self.bad_results)
         
+        # Helper function to safely plot if column exists
+        def safe_boxplot(ax, column, title, ylabel):
+            if column in good_df.columns and column in bad_df.columns:
+                # Filter out NaN/zero values if needed
+                good_data = good_df[column].dropna()
+                bad_data = bad_df[column].dropna()
+                
+                if len(good_data) > 0 and len(bad_data) > 0:
+                    ax.boxplot([good_data, bad_data], labels=['Good', 'Bad'])
+                    ax.set_ylabel(ylabel)
+                    ax.set_title(title)
+                    ax.grid(True, alpha=0.3)
+                else:
+                    ax.text(0.5, 0.5, f'No data\nfor {column}', 
+                           ha='center', va='center', transform=ax.transAxes)
+                    ax.set_title(title + ' (No Data)')
+            else:
+                ax.text(0.5, 0.5, f'Column {column}\nnot available', 
+                       ha='center', va='center', transform=ax.transAxes)
+                ax.set_title(title + ' (N/A)')
+        
         fig, axes = plt.subplots(3, 3, figsize=(18, 14))
         fig.suptitle('CT Scan Quality: Good vs Bad Comparison', fontsize=16, fontweight='bold')
         
         # Plot 1: Slice thickness
-        ax = axes[0, 0]
-        ax.boxplot([good_df['slice_thickness_mm'], bad_df['slice_thickness_mm']], 
-                   labels=['Good', 'Bad'])
-        ax.set_ylabel('Slice Thickness (mm)')
-        ax.set_title('Resolution: Slice Thickness')
-        ax.grid(True, alpha=0.3)
+        safe_boxplot(axes[0, 0], 'slice_thickness_mm', 'Resolution: Slice Thickness', 'Slice Thickness (mm)')
         
         # Plot 2: Connected components
-        ax = axes[0, 1]
-        ax.boxplot([good_df['num_connected_components'], bad_df['num_connected_components']], 
-                   labels=['Good', 'Bad'])
-        ax.set_ylabel('Number of Components')
-        ax.set_title('Fragmentation: Connected Components')
-        ax.grid(True, alpha=0.3)
+        safe_boxplot(axes[0, 1], 'num_connected_components', 'Fragmentation: Connected Components', 'Number of Components')
         
         # Plot 3: Main component percentage
-        ax = axes[0, 2]
-        ax.boxplot([good_df['main_component_percentage'], bad_df['main_component_percentage']], 
-                   labels=['Good', 'Bad'])
-        ax.set_ylabel('Percentage (%)')
-        ax.set_title('Main Component Size')
-        ax.grid(True, alpha=0.3)
+        safe_boxplot(axes[0, 2], 'main_component_percentage', 'Main Component Size', 'Percentage (%)')
         
         # Plot 4: Trachea gaps
-        ax = axes[1, 0]
-        ax.boxplot([good_df['trachea_gaps'], bad_df['trachea_gaps']], 
-                   labels=['Good', 'Bad'])
-        ax.set_ylabel('Number of Gaps')
-        ax.set_title('Trachea Continuity: Gaps')
-        ax.grid(True, alpha=0.3)
+        safe_boxplot(axes[1, 0], 'trachea_gaps', 'Trachea Continuity: Gaps', 'Number of Gaps')
         
         # Plot 5: Slice area variability
-        ax = axes[1, 1]
-        ax.boxplot([good_df['slice_area_cv'], bad_df['slice_area_cv']], 
-                   labels=['Good', 'Bad'])
-        ax.set_ylabel('Coefficient of Variation')
-        ax.set_title('Cross-section Variability')
-        ax.grid(True, alpha=0.3)
+        safe_boxplot(axes[1, 1], 'slice_area_cv', 'Cross-section Variability', 'Coefficient of Variation')
         
         # Plot 6: HU mean in airways
-        ax = axes[1, 2]
-        ax.boxplot([good_df['airway_hu_mean'], bad_df['airway_hu_mean']], 
-                   labels=['Good', 'Bad'])
-        ax.set_ylabel('HU')
-        ax.set_title('Airway HU Mean')
-        ax.grid(True, alpha=0.3)
+        safe_boxplot(axes[1, 2], 'airway_hu_mean', 'Airway HU Mean', 'HU')
         
         # Plot 7: HU distribution (problematic range)
-        ax = axes[2, 0]
-        ax.boxplot([good_df['airway_hu_above_minus_700'], bad_df['airway_hu_above_minus_700']], 
-                   labels=['Good', 'Bad'])
-        ax.set_ylabel('Percentage (%)')
-        ax.set_title('Airway HU > -700 (Non-Air)')
-        ax.grid(True, alpha=0.3)
+        safe_boxplot(axes[2, 0], 'airway_hu_above_minus_700', 'Airway HU > -700 (Non-Air)', 'Percentage (%)')
         
         # Plot 8: Skeleton complexity
-        ax = axes[2, 1]
-        ax.boxplot([good_df['skeleton_to_volume_ratio'], bad_df['skeleton_to_volume_ratio']], 
-                   labels=['Good', 'Bad'])
-        ax.set_ylabel('Ratio')
-        ax.set_title('Skeleton/Volume Ratio')
-        ax.grid(True, alpha=0.3)
+        safe_boxplot(axes[2, 1], 'skeleton_to_volume_ratio', 'Skeleton/Volume Ratio', 'Ratio')
         
         # Plot 9: Fragmentation ratio
-        ax = axes[2, 2]
-        ax.boxplot([good_df['fragmentation_ratio'], bad_df['fragmentation_ratio']], 
-                   labels=['Good', 'Bad'])
-        ax.set_ylabel('Ratio')
-        ax.set_title('Fragmentation (2nd/1st Component)')
-        ax.grid(True, alpha=0.3)
+        safe_boxplot(axes[2, 2], 'fragmentation_ratio', 'Fragmentation (2nd/1st Component)', 'Ratio')
         
         plt.tight_layout()
         
         plot_path = self.output_dir / "comparative_plots.png"
         plt.savefig(plot_path, dpi=200, bbox_inches='tight')
-        print(f"✓ Plots saved: {plot_path}")
+        print(f"âœ“ Plots saved: {plot_path}")
         
         plt.show()
 
@@ -483,8 +462,8 @@ class CTScanQualityAnalyzer:
 
 if __name__ == "__main__":
     # Configura i path
-    GOOD_SCANS_DIR = "path/to/good_scans"  # CARVE14 o OSIC buone
-    BAD_SCANS_DIR = "path/to/bad_scans"    # OSIC problematiche
+    GOOD_SCANS_DIR = "datasets_utils/good_scans"  # CARVE14 o OSIC buone
+    BAD_SCANS_DIR = "datasets_utils/bad_scans"    # OSIC problematiche
     OUTPUT_DIR = "scan_quality_analysis"
     
     # Crea analyzer
@@ -502,7 +481,7 @@ if __name__ == "__main__":
     print("="*70)
     print(f"\nResults saved in: {OUTPUT_DIR}/")
     print("\nCheck these files:")
-    print("  • good_scans_features.csv")
-    print("  • bad_scans_features.csv")
-    print("  • comparative_report.txt")
-    print("  • comparative_plots.png")
+    print("  â€¢ good_scans_features.csv")
+    print("  â€¢ bad_scans_features.csv")
+    print("  â€¢ comparative_report.txt")
+    print("  â€¢ comparative_plots.png")

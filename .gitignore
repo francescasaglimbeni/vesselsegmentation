@@ -1,2 +1,4 @@
 CARVE14/output/
 OSIC/output_OSIC/
+datasets_utils/bad_scans/
+datasets_utils/good_scans/
