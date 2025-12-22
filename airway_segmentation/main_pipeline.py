@@ -12,6 +12,7 @@ from airway_graph import AirwayGraphAnalyzer
 from skeleton_cleaner import integrate_skeleton_cleaning
 import pandas as pd
 
+
 class CompleteAirwayPipeline:
     """
     Complete end-to-end airway analysis pipeline:
@@ -112,7 +113,26 @@ class CompleteAirwayPipeline:
             airway_path = refined_path
             results['airway_segmentation'] = airway_path
             print(f"\n✓ Enhanced segmentation complete: {airway_path}")
+            # ============================================================
+            # STEP 1.5: GAP FILLING (NUOVO)
+            # ============================================================
+            print("\n" + "="*80)
+            print("STEP 1.5: INTELLIGENT GAP FILLING")
+            print("="*80)
 
+            from airway_gap_filler import integrate_gap_filling_into_pipeline
+
+            gap_filled_path, gap_filler = integrate_gap_filling_into_pipeline(
+                mhd_path=mhd_path,
+                airway_mask_path=airway_path,  # Output di TotalSegmentator
+                output_dir=step1_dir,
+                max_hole_size_mm3=100,  # Riempi buchi < 100 mm³
+                max_bridge_distance_mm=10.0  # Connetti componenti < 10mm
+            )
+
+            # Usa la mask gap-filled per gli step successivi
+            airway_path = gap_filled_path
+            results['airway_gap_filled'] = gap_filled_path
             # ============================================================
             # STEP 2: ENHANCED TRACHEA REMOVAL (NEW METHOD)
             # ============================================================
