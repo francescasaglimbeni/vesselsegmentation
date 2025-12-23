@@ -4,24 +4,29 @@ import numpy as np
 import datetime
 from pathlib import Path
 import SimpleITK as sitk
-from test_robust import EnhancedCarinaDetector  # Cambiato qui
+from test_robust import EnhancedCarinaDetector
 from airway_refinement import EnhancedAirwayRefinementModule  
 from airwais_seg import segment_airwayfull_from_mhd
 from preprocessin_cleaning import SegmentationPreprocessor
 from airway_graph import AirwayGraphAnalyzer
 from skeleton_cleaner import integrate_skeleton_cleaning
 import pandas as pd
+from airway_gap_filler import integrate_gap_filling_into_pipeline
+from fibrosis_scoring import integrate_fibrosis_scoring  # NEW
 
 
 class CompleteAirwayPipeline:
     """
-    Complete end-to-end airway analysis pipeline:
+    Complete end-to-end airway analysis pipeline with fibrosis assessment:
     1. Segmentation from MHD (TotalSegmentator)
-    2. Trachea removal (preserving bronchi and carina) - ENHANCED METHOD
-    3. Preprocessing with component reconnection
-    4. Skeletonization and graph construction
-    5. Weibel generation analysis
-    6. Complete metrics and visualizations
+    2. Enhanced Refinement
+    3. Gap Filling
+    4. Trachea removal (preserving bronchi and carina)
+    5. Preprocessing with component reconnection
+    6. Skeletonization and graph construction
+    7. Weibel generation analysis
+    8. Advanced clinical metrics
+    9. Pulmonary fibrosis assessment (NEW)
     """
     
     def __init__(self, output_root="output"):
@@ -59,8 +64,9 @@ class CompleteAirwayPipeline:
         step2_dir = os.path.join(scan_output_dir, "step2_trachea_removal")
         step3_dir = os.path.join(scan_output_dir, "step3_preprocessing")
         step4_dir = os.path.join(scan_output_dir, "step4_analysis")
+        step6_dir = os.path.join(scan_output_dir, "step6_fibrosis_assessment")
         
-        for d in [step1_dir, step2_dir, step3_dir, step4_dir]:
+        for d in [step1_dir, step2_dir, step3_dir, step4_dir, step6_dir]:
             os.makedirs(d, exist_ok=True)
         
         results = {
@@ -88,16 +94,13 @@ class CompleteAirwayPipeline:
             # ENHANCED REFINEMENT
             print("\n--- Applying Enhanced Refinement ---")
 
-            # Carica CT originale
             ct_img = sitk.ReadImage(mhd_path)
             ct_np = sitk.GetArrayFromImage(ct_img)
 
-            # Carica maschera airwayfull
             airway_img = sitk.ReadImage(airway_path)
             airway_np = sitk.GetArrayFromImage(airway_img)
             mask_np = (airway_np > 0).astype(np.uint8)
 
-            # Refinement avanzato
             ARM = EnhancedAirwayRefinementModule(
                 ct_np, 
                 mask_np, 
@@ -106,46 +109,41 @@ class CompleteAirwayPipeline:
             )
             refined_np = ARM.refine()
 
-            # Salvataggio
             refined_path = os.path.join(step1_dir, f"{scan_name}_airway_refined_enhanced.nii.gz")
             ARM.save(refined_path, airway_img)
 
             airway_path = refined_path
             results['airway_segmentation'] = airway_path
             print(f"\n✓ Enhanced segmentation complete: {airway_path}")
+            
             # ============================================================
-            # STEP 1.5: GAP FILLING (NUOVO)
+            # STEP 1.5: GAP FILLING
             # ============================================================
             print("\n" + "="*80)
             print("STEP 1.5: INTELLIGENT GAP FILLING")
             print("="*80)
 
-            from airway_gap_filler import integrate_gap_filling_into_pipeline
-
             gap_filled_path, gap_filler = integrate_gap_filling_into_pipeline(
                 mhd_path=mhd_path,
-                airway_mask_path=airway_path,  # Output di TotalSegmentator
+                airway_mask_path=airway_path,
                 output_dir=step1_dir,
-                max_hole_size_mm3=100,  # Riempi buchi < 100 mm³
-                max_bridge_distance_mm=10.0  # Connetti componenti < 10mm
+                max_hole_size_mm3=100,
+                max_bridge_distance_mm=10.0
             )
 
-            # Usa la mask gap-filled per gli step successivi
             airway_path = gap_filled_path
             results['airway_gap_filled'] = gap_filled_path
+
             # ============================================================
-            # STEP 2: ENHANCED TRACHEA REMOVAL (NEW METHOD)
+            # STEP 2: ENHANCED TRACHEA REMOVAL
             # ============================================================
             print("\n" + "="*80)
             print("STEP 2: ENHANCED TRACHEA REMOVAL")
             print("="*80)
             print("Using ultra-conservative trachea identification method")
-            print("Strategy: Pre-cut → Identify trachea → Remove upper 50% only")
 
-            # IMPORTANTE: Importa la funzione che salva i grafici
             from test_robust import integrate_with_pipeline
 
-            # Usa integrate_with_pipeline passando la directory di output corretta
             bronchi_mask, carina_coords, confidence, detector = integrate_with_pipeline(
                 airway_path,
                 spacing=None,
@@ -153,30 +151,34 @@ class CompleteAirwayPipeline:
                 output_dir=step2_dir  
             )
 
-            # Il file è già salvato come bronchi_enhanced_conservative.nii.gz
-            # Rinominalo in bronchi_enhanced.nii.gz per compatibilità
             bronchi_original_path = os.path.join(step2_dir, "bronchi_enhanced_conservative.nii.gz")
             bronchi_filename = f"{scan_name}_bronchi_enhanced.nii.gz"
             bronchi_path = os.path.join(step2_dir, bronchi_filename)
             
             if os.path.exists(bronchi_original_path):
-                # Rimuovi il file di destinazione se esiste già
                 if os.path.exists(bronchi_path):
                     os.remove(bronchi_path)
-                    print(f"✓ Removed existing: {bronchi_path}")
-                
                 os.rename(bronchi_original_path, bronchi_path)
-                print(f"✓ Renamed to: {bronchi_path}")
 
-            # Aggiungi le coordinate della carina ai risultati
             carina_z, carina_y, carina_x = carina_coords
+            
+            # Store trachea info
+            results['trachea_info'] = {
+                'detection_method': detector.detection_method,
+                'confidence': confidence,
+                'trachea_top_z': detector.trachea_top_z,
+                'trachea_bottom_z': detector.trachea_bottom_z,
+                'trachea_length_slices': detector.trachea_length,
+                'trachea_length_mm': detector.trachea_length * detector.spacing[2] if detector.trachea_length else None
+            }
+            results['carina_coordinates'] = {'z': carina_z, 'y': carina_y, 'x': carina_x}
+            
             # ============================================================
             # STEP 3: PREPROCESSING WITH COMPONENT RECONNECTION
             # ============================================================
             print("\n" + "="*80)
             print("STEP 3: PREPROCESSING & COMPONENT RECONNECTION")
             print("="*80)
-            print(f"Loading segmentation from: {os.path.abspath(bronchi_path)}")
             
             preprocessor = SegmentationPreprocessor(bronchi_path)
             
@@ -189,15 +191,15 @@ class CompleteAirwayPipeline:
             )
             
             results['cleaned_mask'] = cleaned_path
-            print(f"\n✓ Preprocessing complete: {cleaned_path}")
-            # Dopo preprocessing, PRIMA dell'analisi
+            
             cleaned_skeleton_path, _ = integrate_skeleton_cleaning(
                 cleaned_path, 
                 step4_dir,
-                min_component_size=20,  # Parametro da calibrare!
+                min_component_size=20,
                 max_isolation_distance_mm=15.0,
                 min_branch_length_mm=5.0
             )
+            
             # ============================================================
             # STEP 4: COMPLETE BRONCHIAL TREE ANALYSIS
             # ============================================================
@@ -218,29 +220,20 @@ class CompleteAirwayPipeline:
             results['analysis_results'] = analysis_results
             results['analyzer'] = analyzer
             
-            print(f"\n✓ Analysis complete!")
-            
             # ============================================================
-            # STEP 5: ADVANCED CLINICAL METRICS (NEW)
+            # STEP 5: ADVANCED CLINICAL METRICS
             # ============================================================
             print("\n" + "="*80)
             print("STEP 5: ADVANCED CLINICAL METRICS")
             print("="*80)
 
             try:
-                # Calcola metriche avanzate
                 advanced_metrics = analyzer.compute_advanced_metrics()
-                
-                # Salva metriche
                 analyzer.save_advanced_metrics(step4_dir)
-                
-                # Genera plot
                 analyzer.plot_advanced_metrics(
                     save_path=os.path.join(step4_dir, "advanced_metrics_summary.png")
                 )
-                
                 results['advanced_metrics'] = advanced_metrics
-                
                 print("\n✓ Advanced metrics computed and saved")
                 
             except Exception as e:
@@ -249,7 +242,30 @@ class CompleteAirwayPipeline:
                 traceback.print_exc()
 
             # ============================================================
-            # GENERATE SUMMARY REPORT
+            # STEP 6: PULMONARY FIBROSIS ASSESSMENT (NEW)
+            # ============================================================
+            print("\n" + "="*80)
+            print("STEP 6: PULMONARY FIBROSIS ASSESSMENT")
+            print("="*80)
+
+            try:
+                scorer, fibrosis_report = integrate_fibrosis_scoring(
+                    analyzer,
+                    output_dir=step6_dir
+                )
+                
+                results['fibrosis_scorer'] = scorer
+                results['fibrosis_report'] = fibrosis_report
+                
+                print("\n✓ Fibrosis assessment complete")
+                
+            except Exception as e:
+                print(f"\n⚠ Warning: Could not complete fibrosis assessment: {e}")
+                import traceback
+                traceback.print_exc()
+
+            # ============================================================
+            # GENERATE COMPREHENSIVE SUMMARY REPORT
             # ============================================================
             self._generate_summary_report(results, scan_output_dir, analyzer)
             
@@ -282,7 +298,6 @@ class CompleteAirwayPipeline:
         print(f" BATCH PROCESSING: {folder_path}")
         print("="*80)
         
-        # Find all MHD files
         folder_path = Path(folder_path)
         mhd_files = list(folder_path.glob(pattern))
         
@@ -309,7 +324,6 @@ class CompleteAirwayPipeline:
             
             all_results.append(result)
         
-        # Generate batch summary
         self._generate_batch_summary(all_results, self.output_root)
         
         return all_results
@@ -332,12 +346,14 @@ class CompleteAirwayPipeline:
             f.write("PIPELINE STEPS\n")
             f.write("="*80 + "\n\n")
             
-            f.write("1. ✓ Segmentation (TotalSegmentator)\n")
+            f.write("1. ✓ Segmentation (TotalSegmentator + Enhanced Refinement)\n")
             f.write(f"   Output: {results.get('airway_segmentation', 'N/A')}\n\n")
             
-            f.write("2. ✓ ENHANCED Trachea Removal (Ultra-conservative)\n")
-            f.write(f"   Output: {results.get('bronchi_mask', 'N/A')}\n")
-            f.write(f"   Method: EnhancedCarinaDetector with pre-cut\n")
+            f.write("2. ✓ Gap Filling\n")
+            f.write(f"   Output: {results.get('airway_gap_filled', 'N/A')}\n\n")
+            
+            f.write("3. ✓ Enhanced Trachea Removal\n")
+            f.write(f"   Method: Ultra-conservative with pre-cut\n")
             
             if 'carina_coordinates' in results:
                 carina = results['carina_coordinates']
@@ -348,17 +364,24 @@ class CompleteAirwayPipeline:
                 f.write(f"   Detection method: {trachea.get('detection_method', 'N/A')}\n")
                 f.write(f"   Confidence: {trachea.get('confidence', 0):.2f}/5.0\n")
                 if trachea.get('trachea_length_mm'):
-                    f.write(f"   Trachea identified: z={trachea['trachea_top_z']} to z={trachea['trachea_bottom_z']}\n")
-                    f.write(f"   Trachea length: {trachea['trachea_length_mm']:.1f} mm "
-                           f"({trachea['trachea_length_slices']} slices)\n")
+                    f.write(f"   Trachea: z={trachea['trachea_top_z']} to z={trachea['trachea_bottom_z']}\n")
+                    f.write(f"   Length: {trachea['trachea_length_mm']:.1f} mm\n")
             f.write("\n")
             
-            f.write("3. ✓ Preprocessing & Component Reconnection\n")
+            f.write("4. ✓ Preprocessing & Component Reconnection\n")
             f.write(f"   Output: {results.get('cleaned_mask', 'N/A')}\n\n")
             
-            f.write("4. ✓ Bronchial Tree Analysis\n")
-            f.write(f"   Output directory: {os.path.join(output_dir, 'step4_analysis')}\n\n")
+            f.write("5. ✓ Bronchial Tree Analysis\n")
+            f.write(f"   Output: {os.path.join(output_dir, 'step4_analysis')}\n\n")
             
+            f.write("6. ✓ Advanced Clinical Metrics\n\n")
+            
+            f.write("7. ✓ Pulmonary Fibrosis Assessment\n")
+            f.write(f"   Output: {os.path.join(output_dir, 'step6_fibrosis_assessment')}\n\n")
+            
+            # ============================================================
+            # BRONCHIAL TREE STATISTICS
+            # ============================================================
             f.write("="*80 + "\n")
             f.write("BRONCHIAL TREE STATISTICS\n")
             f.write("="*80 + "\n\n")
@@ -367,141 +390,138 @@ class CompleteAirwayPipeline:
                 df = analyzer.branch_metrics_df
                 
                 f.write(f"Total branches: {len(df)}\n")
-                f.write(f"Total bronchial tree length: {df['length_mm'].sum():.2f} mm\n")
-                f.write(f"Total bronchial tree volume: {df['volume_mm3'].sum():.2f} mm³\n\n")
+                f.write(f"Total tree length: {df['length_mm'].sum():.2f} mm\n")
+                f.write(f"Total tree volume: {df['volume_mm3'].sum():.2f} mm³\n\n")
                 
                 f.write(f"Diameter statistics:\n")
                 f.write(f"  Mean: {df['diameter_mean_mm'].mean():.2f} mm\n")
-                f.write(f"  Min:  {df['diameter_mean_mm'].min():.2f} mm\n")
-                f.write(f"  Max:  {df['diameter_mean_mm'].max():.2f} mm\n")
-                f.write(f"  Std:  {df['diameter_mean_mm'].std():.2f} mm\n\n")
-                
-                f.write(f"Length statistics:\n")
-                f.write(f"  Mean: {df['length_mm'].mean():.2f} mm\n")
-                f.write(f"  Min:  {df['length_mm'].min():.2f} mm\n")
-                f.write(f"  Max:  {df['length_mm'].max():.2f} mm\n")
-                f.write(f"  Std:  {df['length_mm'].std():.2f} mm\n\n")
-            
-            if hasattr(analyzer, 'bifurcations_df') and analyzer.bifurcations_df is not None:
-                f.write(f"Bifurcations: {len(analyzer.bifurcations_df)}\n\n")
+                f.write(f"  Range: {df['diameter_mean_mm'].min():.2f} - {df['diameter_mean_mm'].max():.2f} mm\n\n")
             
             if hasattr(analyzer, 'weibel_analysis_df') and analyzer.weibel_analysis_df is not None:
+                f.write("\nWeibel Generation Analysis:\n")
+                weibel_df = analyzer.weibel_analysis_df
+                f.write(f"  Maximum generation: {int(weibel_df['generation'].max())}\n")
+                f.write(f"  Number of generations: {len(weibel_df)}\n\n")
+            
+            # ============================================================
+            # ADVANCED CLINICAL METRICS
+            # ============================================================
+            if hasattr(analyzer, 'advanced_metrics') and analyzer.advanced_metrics is not None:
                 f.write("="*80 + "\n")
-                f.write("WEIBEL GENERATION ANALYSIS\n")
+                f.write("ADVANCED CLINICAL METRICS\n")
                 f.write("="*80 + "\n\n")
                 
-                weibel_df = analyzer.weibel_analysis_df
-                f.write(f"Maximum generation: {int(weibel_df['generation'].max())}\n")
-                f.write(f"Number of generations: {len(weibel_df)}\n\n")
+                metrics = analyzer.advanced_metrics
                 
-                f.write("Generation breakdown:\n")
-                f.write(f"{'Gen':<5} {'Branches':<10} {'Mean Ø (mm)':<15} {'Mean L (mm)':<15}\n")
-                f.write("-"*50 + "\n")
+                f.write(f"Total airway volume: {metrics['total_volume_mm3']:.2f} mm³\n\n")
                 
-                for _, row in weibel_df.iterrows():
-                    gen = int(row['generation'])
-                    n_branches = int(row['n_branches'])
-                    diameter = row['diameter_mean_mm']
-                    length = row['length_mean_mm']
-                    f.write(f"{gen:<5} {n_branches:<10} {diameter:<15.2f} {length:<15.2f}\n")
+                f.write("Peripheral vs Central:\n")
+                f.write(f"  Central: {metrics['central_volume_mm3']:.2f} mm³ ({metrics['central_branch_count']} branches)\n")
+                f.write(f"  Peripheral: {metrics['peripheral_volume_mm3']:.2f} mm³ ({metrics['peripheral_branch_count']} branches)\n")
+                f.write(f"  P/C Ratio: {metrics['peripheral_to_central_ratio']:.3f}\n")
                 
-                f.write("\n")
+                if metrics['peripheral_to_central_ratio'] < 0.2:
+                    f.write(f"    ⚠ LOW - peripheral airway loss\n")
+                elif metrics['peripheral_to_central_ratio'] > 0.6:
+                    f.write(f"    ✓ HIGH - well-preserved\n")
+                else:
+                    f.write(f"    ✓ Normal range\n")
+                f.write(f"\n")
                 
-                if hasattr(analyzer, 'tapering_ratios_df') and len(analyzer.tapering_ratios_df) > 0:
-                    f.write("\nDiameter tapering ratios:\n")
-                    mean_ratio = analyzer.tapering_ratios_df['diameter_ratio'].mean()
-                    weibel_theoretical = 2**(-1/3)
-                    
-                    f.write(f"  Mean observed ratio: {mean_ratio:.3f}\n")
-                    f.write(f"  Weibel theoretical:  {weibel_theoretical:.3f}\n")
-                    f.write(f"  Difference:          {abs(mean_ratio - weibel_theoretical):.3f}\n")
-                if hasattr(analyzer, 'advanced_metrics') and analyzer.advanced_metrics is not None:
-                    f.write("="*80 + "\n")
-                    f.write("ADVANCED CLINICAL METRICS\n")
-                    f.write("="*80 + "\n\n")
-                    
-                    metrics = analyzer.advanced_metrics
-                    
-                    f.write(f"Total airway volume: {metrics['total_volume_mm3']:.2f} mm³\n\n")
-                    
-                    f.write("Peripheral vs Central Analysis:\n")
-                    f.write(f"  Central (Gen 0-10):\n")
-                    f.write(f"    Volume: {metrics['central_volume_mm3']:.2f} mm³\n")
-                    f.write(f"    Branches: {metrics['central_branch_count']}\n")
-                    f.write(f"  Intermediate (Gen 11-15):\n")
-                    f.write(f"    Volume: {metrics['intermediate_volume_mm3']:.2f} mm³\n")
-                    f.write(f"    Branches: {metrics['intermediate_branch_count']}\n")
-                    f.write(f"  Peripheral (Gen >15):\n")
-                    f.write(f"    Volume: {metrics['peripheral_volume_mm3']:.2f} mm³\n")
-                    f.write(f"    Branches: {metrics['peripheral_branch_count']}\n")
-                    f.write(f"  Peripheral/Central Volume Ratio: {metrics['peripheral_to_central_ratio']:.3f}\n")
-                    
-                    # Interpretazione
-                    if metrics['peripheral_to_central_ratio'] < 0.2:
-                        f.write(f"    ⚠ LOW P/C ratio - suggests peripheral airway loss (fibrosis marker)\n")
-                    elif metrics['peripheral_to_central_ratio'] > 0.6:
-                        f.write(f"    ✓ HIGH P/C ratio - well-preserved peripheral airways\n")
+                if 'mean_tortuosity' in metrics and not pd.isna(metrics['mean_tortuosity']):
+                    f.write(f"Tortuosity: {metrics['mean_tortuosity']:.3f}\n")
+                    if metrics['mean_tortuosity'] > 1.5:
+                        f.write(f"  ⚠ HIGH - airway distortion\n")
                     else:
-                        f.write(f"    ✓ Normal P/C ratio range\n")
-                    
+                        f.write(f"  ✓ Normal range\n")
                     f.write(f"\n")
-                    
-                    if 'mean_tortuosity' in metrics and not pd.isna(metrics['mean_tortuosity']):
-                        f.write(f"Airway Tortuosity:\n")
-                        f.write(f"  Mean: {metrics['mean_tortuosity']:.3f}\n")
-                        f.write(f"  Median: {metrics['median_tortuosity']:.3f}\n")
-                        if metrics['mean_tortuosity'] > 1.5:
-                            f.write(f"    ⚠ HIGH tortuosity - suggests airway distortion (fibrosis)\n")
-                        else:
-                            f.write(f"    ✓ Normal tortuosity range\n")
-                        f.write(f"\n")
-                    
-                    if 'symmetry_index' in metrics and not pd.isna(metrics['symmetry_index']):
-                        f.write(f"Left-Right Symmetry:\n")
-                        f.write(f"  Left side branches: {metrics['left_side_branch_count']}\n")
-                        f.write(f"  Right side branches: {metrics['right_side_branch_count']}\n")
-                        f.write(f"  Symmetry index: {metrics['symmetry_index']:.3f}\n")
-                        if metrics['symmetry_index'] < 0.7:
-                            f.write(f"    ⚠ ASYMMETRIC - suggests unilateral disease\n")
-                        else:
-                            f.write(f"    ✓ Symmetric branching pattern\n")
-                        f.write(f"\n")
-                    
-                    f.write(f"Generation Coverage: {metrics['generation_coverage']*100:.1f}%\n")
-                    if metrics['missing_generations']:
-                        f.write(f"  Missing generations: {len(metrics['missing_generations'])}\n")
-                    
-                    f.write("\n")
-
-            f.write("\n" + "="*80 + "\n")
-            f.write("ENHANCED TRACHEA REMOVAL METHOD\n")
-            f.write("="*80 + "\n\n")
+                
+                if 'symmetry_index' in metrics and not pd.isna(metrics['symmetry_index']):
+                    f.write(f"Symmetry Index: {metrics['symmetry_index']:.3f}\n")
+                    if metrics['symmetry_index'] < 0.7:
+                        f.write(f"  ⚠ ASYMMETRIC\n")
+                    else:
+                        f.write(f"  ✓ Symmetric\n")
+                    f.write(f"\n")
+                
+                f.write(f"Generation Coverage: {metrics['generation_coverage']*100:.1f}%\n\n")
             
-            f.write("Key improvements:\n")
-            f.write("  1. Pre-cut fisso a z=390 per rimuovere trachea cervicale\n")
-            f.write("  2. Identificazione intelligente della trachea vera\n")
-            f.write("  3. Distinzione trachea/rami bronchiali basata su posizione\n")
-            f.write("  4. Rimozione solo della metà superiore della trachea\n")
-            f.write("  5. Preservazione completa di carina e tutti i rami bronchiali\n")
-            f.write("  6. Approccio ultra-conservativo per massima sicurezza\n\n")
+            # ============================================================
+            # PULMONARY FIBROSIS ASSESSMENT (NEW)
+            # ============================================================
+            if 'fibrosis_report' in results and results['fibrosis_report'] is not None:
+                f.write("="*80 + "\n")
+                f.write("PULMONARY FIBROSIS ASSESSMENT\n")
+                f.write("="*80 + "\n\n")
+                
+                fib_rep = results['fibrosis_report']
+                overall = fib_rep['overall']
+                
+                f.write(f"FIBROSIS SCORE: {overall['fibrosis_score']:.1f}/100\n")
+                f.write(f"CLASSIFICATION: {overall['stage']}\n")
+                f.write(f"CONFIDENCE: {overall['confidence']:.0%}\n\n")
+                
+                f.write("Component Breakdown:\n")
+                f.write("-" * 80 + "\n")
+                
+                for comp_name, comp_data in fib_rep['components'].items():
+                    f.write(f"\n{comp_name.replace('_', ' ').title()}:\n")
+                    f.write(f"  Contribution: {comp_data['weighted_score']:.1f} points\n")
+                    f.write(f"  Raw score: {comp_data['raw_score']:.1f}/10\n")
+                    f.write(f"  Interpretation: {comp_data['interpretation']}\n")
+                
+                f.write("\n" + "="*80 + "\n")
+                f.write("CLINICAL INTERPRETATION\n")
+                f.write("="*80 + "\n\n")
+                
+                score = overall['fibrosis_score']
+                
+                if score < 20:
+                    f.write("No significant fibrotic changes detected.\n")
+                    f.write("Airways appear structurally normal.\n")
+                elif score < 35:
+                    f.write("Minimal fibrotic changes detected.\n")
+                    f.write("Early peripheral airway involvement.\n")
+                    f.write("Recommendation: Monitor for progression.\n")
+                elif score < 50:
+                    f.write("Mild fibrosis with measurable airway changes.\n")
+                    f.write("Recommendation: Clinical correlation and follow-up.\n")
+                elif score < 70:
+                    f.write("Moderate fibrosis with UIP-pattern features.\n")
+                    f.write("Recommendation: PFT and specialist consultation.\n")
+                else:
+                    f.write("Severe/advanced fibrosis detected.\n")
+                    f.write("Recommendation: Urgent pulmonary evaluation.\n")
+                
+                f.write("\n" + "="*80 + "\n")
+                f.write("DISCLAIMER\n")
+                f.write("="*80 + "\n\n")
+                f.write("This is an AUTOMATED ASSESSMENT based on airway morphology.\n")
+                f.write("It does NOT replace clinical evaluation, complete CT review,\n")
+                f.write("pulmonary function tests, or pathological diagnosis.\n")
+                f.write("Always correlate with full clinical picture.\n\n")
             
+            # ============================================================
+            # OUTPUT FILES
+            # ============================================================
             f.write("="*80 + "\n")
             f.write("OUTPUT FILES\n")
             f.write("="*80 + "\n\n")
             
-            f.write(f"Main results directory: {output_dir}\n\n")
+            f.write(f"Main directory: {output_dir}\n\n")
             
             f.write("Key files:\n")
             f.write(f"  • step1_segmentation/          - Initial airway segmentation\n")
-            f.write(f"  • step2_trachea_removal/       - Bronchi-only mask (ENHANCED method)\n")
-            f.write(f"  • step3_preprocessing/         - Cleaned and reconnected mask\n")
-            f.write(f"  • step4_analysis/              - Complete analysis results\n")
+            f.write(f"  • step2_trachea_removal/       - Bronchi-only mask\n")
+            f.write(f"  • step3_preprocessing/         - Cleaned mask\n")
+            f.write(f"  • step4_analysis/              - Complete analysis\n")
             f.write(f"    - branch_metrics_complete.csv\n")
             f.write(f"    - weibel_generation_analysis.csv\n")
-            f.write(f"    - weibel_tapering_ratios.csv\n")
-            f.write(f"    - bifurcations.csv\n")
-            f.write(f"    - skeleton.nii.gz\n")
-            f.write(f"    - Multiple visualization PNG files\n")
+            f.write(f"    - Multiple visualizations\n")
+            f.write(f"  • step6_fibrosis_assessment/   - Fibrosis scoring\n")
+            f.write(f"    - fibrosis_assessment_report.txt\n")
+            f.write(f"    - fibrosis_assessment.json\n")
+            f.write(f"    - fibrosis_assessment_visualization.png\n")
             
             f.write("\n" + "="*80 + "\n")
         
@@ -520,23 +540,25 @@ class CompleteAirwayPipeline:
             f.write(" "*25 + "BATCH PROCESSING SUMMARY\n")
             f.write("="*80 + "\n\n")
             
-            f.write(f"Processing date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"Total scans processed: {len(all_results)}\n")
+            f.write(f"Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Total scans: {len(all_results)}\n")
             f.write(f"Successful: {len(successful)}\n")
             f.write(f"Failed: {len(failed)}\n\n")
             
-            f.write("="*80 + "\n")
-            f.write("SUCCESSFUL SCANS\n")
-            f.write("="*80 + "\n\n")
-            
-            for result in successful:
-                f.write(f"✓ {result['scan_name']}\n")
-                f.write(f"  Output: {result['output_dir']}\n")
-                if 'trachea_info' in result:
-                    trachea = result['trachea_info']
-                    f.write(f"  Carina confidence: {trachea.get('confidence', 0):.2f}/5.0\n")
-                    f.write(f"  Method: {trachea.get('detection_method', 'N/A')}\n")
-                f.write("\n")
+            if successful:
+                f.write("="*80 + "\n")
+                f.write("SUCCESSFUL SCANS\n")
+                f.write("="*80 + "\n\n")
+                
+                for result in successful:
+                    f.write(f"✓ {result['scan_name']}\n")
+                    f.write(f"  Output: {result['output_dir']}\n")
+                    
+                    if 'fibrosis_report' in result and result['fibrosis_report']:
+                        fib = result['fibrosis_report']['overall']
+                        f.write(f"  Fibrosis: {fib['fibrosis_score']:.1f}/100 ({fib['stage']})\n")
+                    
+                    f.write("\n")
             
             if failed:
                 f.write("="*80 + "\n")
@@ -548,64 +570,38 @@ class CompleteAirwayPipeline:
                     f.write(f"  Error: {result['error']}\n\n")
             
             f.write("="*80 + "\n")
-            f.write("ENHANCED METHOD INFORMATION\n")
-            f.write("="*80 + "\n\n")
-            f.write("Trachea removal: Enhanced ultra-conservative method\n")
-            f.write("  - Pre-cut fisso a z=390 per trachea cervicale\n")
-            f.write("  - Identificazione intelligente della trachea vera\n")
-            f.write("  - Distinzione trachea/rami bronchiali\n")
-            f.write("  - Rimozione solo metà superiore della trachea\n")
-            f.write("  - Preservazione completa carina e rami bronchiali\n")
-            f.write("  - Approccio ultra-conservativo per massima sicurezza\n\n")
         
         print(f"\n📄 Batch summary saved: {report_path}")
 
 
 def main():
-    """Main entry point with predefined parameters"""
+    """Main entry point"""
     
     # ============================================================
-    # CONFIGURATION PARAMETERS - MODIFY THESE AS NEEDED
+    # CONFIGURATION
     # ============================================================
     
-    # Input path (file or folder)
     INPUT_PATH = r"X:/Francesca Saglimbeni/tesi/vesselsegmentation/airway_segmentation/test_data"
-    
-    # Output directory
-    OUTPUT_DIR = "output_results_enhanced"
-    
-    # Processing mode
-    BATCH_MODE = True  # Set to True for folder processing, False for single file
-    
-    # Enhanced trachea removal parameters
-    
-    # Segmentation mode
-    FAST_SEGMENTATION = False  # Use fast mode for TotalSegmentator
-    
-    # File pattern for batch mode
+    OUTPUT_DIR = "output_results_with_fibrosis"
+    BATCH_MODE = True
+    FAST_SEGMENTATION = False
     FILE_PATTERN = "*.mhd"
     
     # ============================================================
-    # PIPELINE EXECUTION
+    # EXECUTION
     # ============================================================
     
-    # Create pipeline
     pipeline = CompleteAirwayPipeline(output_root=OUTPUT_DIR)
     
     print("\n" + "="*80)
-    print(" "*15 + "ENHANCED AIRWAY ANALYSIS PIPELINE")
+    print(" "*10 + "COMPLETE AIRWAY ANALYSIS WITH FIBROSIS ASSESSMENT")
     print("="*80)
     print(f"\nInput: {INPUT_PATH}")
     print(f"Output: {OUTPUT_DIR}")
-    print(f"Trachea removal: Enhanced ultra-conservative method")
-    print(f"Fast segmentation: {FAST_SEGMENTATION}")
     print(f"Batch mode: {BATCH_MODE}")
+    print(f"Fibrosis assessment: ENABLED")
     
-    # Process
     if BATCH_MODE:
-        print(f"\nMode: BATCH PROCESSING")
-        print(f"Pattern: {FILE_PATTERN}")
-        
         if not os.path.isdir(INPUT_PATH):
             print(f"\n❌ Error: {INPUT_PATH} is not a directory")
             sys.exit(1)
@@ -613,61 +609,40 @@ def main():
         results = pipeline.process_folder(
             INPUT_PATH,
             pattern=FILE_PATTERN,
-            fast_segmentation=FAST_SEGMENTATION,
+            fast_segmentation=FAST_SEGMENTATION
         )
         
-        # Print summary
         successful = [r for r in results if r['success']]
         failed = [r for r in results if not r['success']]
         
         print("\n" + "="*80)
-        print(" "*25 + "BATCH PROCESSING COMPLETE")
+        print(" "*20 + "BATCH PROCESSING COMPLETE")
         print("="*80)
         print(f"\nTotal scans: {len(results)}")
         print(f"✓ Successful: {len(successful)}")
         print(f"❌ Failed: {len(failed)}")
         
     else:
-        print(f"\nMode: SINGLE SCAN")
-        
         if not os.path.exists(INPUT_PATH):
             print(f"\n❌ Error: {INPUT_PATH} does not exist")
             sys.exit(1)
         
-        if os.path.isdir(INPUT_PATH):
-            print(f"\n❌ Error: {INPUT_PATH} is a directory. Set BATCH_MODE=True for folder processing")
-            sys.exit(1)
-        
-        result = pipeline.process_single_scan(
-            INPUT_PATH,
-            fast_segmentation=FAST_SEGMENTATION,
-        )
+        result = pipeline.process_single_scan(INPUT_PATH, fast_segmentation=FAST_SEGMENTATION)
         
         if result['success']:
             print("\n" + "="*80)
             print(" "*30 + "SUCCESS!")
             print("="*80)
-            print(f"\n✓ Enhanced analysis complete for {result['scan_name']}")
-            print(f"\n📁 Results saved in: {result['output_dir']}")
+            print(f"\n✓ Complete analysis with fibrosis assessment")
+            print(f"\n📁 Results: {result['output_dir']}")
             
-            if 'trachea_info' in result:
-                trachea = result['trachea_info']
-                print(f"\nEnhanced trachea removal details:")
-                print(f"  Method: {trachea.get('detection_method', 'N/A')}")
-                print(f"  Confidence: {trachea.get('confidence', 0):.2f}/5.0")
-                if trachea.get('trachea_length_mm'):
-                    print(f"  Trachea identified: z={trachea['trachea_top_z']} to z={trachea['trachea_bottom_z']}")
-                    print(f"  Trachea length: {trachea['trachea_length_mm']:.1f} mm")
+            if 'fibrosis_report' in result and result['fibrosis_report']:
+                fib = result['fibrosis_report']['overall']
+                print(f"\nFibrosis Score: {fib['fibrosis_score']:.1f}/100")
+                print(f"Classification: {fib['stage']}")
         else:
-            print("\n" + "="*80)
-            print(" "*30 + "FAILED!")
-            print("="*80)
             print(f"\n❌ Error: {result['error']}")
             sys.exit(1)
-    
-    print("\n" + "="*80)
-    print("Enhanced pipeline execution completed!")
-    print("="*80 + "\n")
 
 
 if __name__ == "__main__":
