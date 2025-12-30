@@ -107,7 +107,16 @@ class CompleteAirwayPipeline:
                 ct_img.GetSpacing(),
                 verbose=True
             )
-            refined_np = ARM.refine()
+
+            # PARAMETRI ANTI-BLOB (regola questi in base ai tuoi risultati)
+            refined_np = ARM.refine(
+                enable_anti_blob=True,              # ✓ ABILITA ANTI-BLOB
+                min_blob_size_voxels=50,           # Blob < 50 voxel → RIMOSSI
+                min_blob_size_mm3=10,              # Blob < 10 mm³ → RIMOSSI
+                max_blob_distance_mm=15.0,         # Blob a >15mm dalla struttura principale → RIMOSSI
+                enable_tubular_smoothing=True,     # ✓ Smoothing che preserva forme tubolari
+                enable_skeleton_reconstruction=False  # Disabilitato (lento), abilitalo solo se necessario
+            )
 
             refined_path = os.path.join(step1_dir, f"{scan_name}_airway_refined_enhanced.nii.gz")
             ARM.save(refined_path, airway_img)

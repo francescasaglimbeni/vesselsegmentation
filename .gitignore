@@ -2,3 +2,5 @@ CARVE14/output/
 OSIC/output_OSIC/
 datasets_utils/bad_scans/
 datasets_utils/good_scans/
+vessel_segmentation_new/vessel_env/
+vessel_segmentation_new/__pycache__/
