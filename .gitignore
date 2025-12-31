@@ -4,3 +4,4 @@ datasets_utils/bad_scans/
 datasets_utils/good_scans/
 vessel_segmentation_new/vessel_env/
 vessel_segmentation_new/__pycache__/
+vessel_segmentation_new/vessel_output/
