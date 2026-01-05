@@ -5,3 +5,8 @@ datasets_utils/good_scans/
 vessel_segmentation_new/vessel_env/
 vessel_segmentation_new/__pycache__/
 vessel_segmentation_new/vessel_output/
+validation_pipeline/validation_output/
+validation_pipeline/__pycache__/
+validation_pipeline/validation_intrinsic.csv
+validation_pipeline/venv_val/
+validation_pipeline/output/
