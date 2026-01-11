@@ -282,7 +282,78 @@ class AirwayGraphAnalyzer:
         if components_removed > 0:
             print(f"✓ Removed {components_removed} components (noise)")
         
+        # CRITICAL FIX: Force connection of top 2 largest components (left + right lung)
+        # This ensures both lungs are in the same graph even if separated in skeleton
+        self._force_connect_top_components(new_skeleton)
+        
         return self.skeleton
+    
+    def _force_connect_top_components(self, skeleton_array):
+        """
+        CRITICAL FIX for asymmetry issue:
+        Forces connection between the 2 largest components (left & right lung)
+        even if they are far apart in skeleton space.
+        """
+        print(f"\n=== FORCE CONNECTING TOP COMPONENTS (ASYMMETRY FIX) ===")
+        
+        # Re-analyze components after management
+        labeled_array, num_features = label(skeleton_array, structure=np.ones((3,3,3)))
+        
+        if num_features < 2:
+            print("Only 1 component found - no need to force connection")
+            return
+        
+        # Get sizes of all components
+        component_sizes = []
+        for i in range(1, num_features + 1):
+            size = np.sum(labeled_array == i)
+            component_sizes.append((i, size))
+        
+        # Sort by size
+        component_sizes.sort(key=lambda x: x[1], reverse=True)
+        
+        # If top 2 components are both large (likely left+right lung), force connect them
+        if len(component_sizes) >= 2:
+            comp1_id, comp1_size = component_sizes[0]
+            comp2_id, comp2_size = component_sizes[1]
+            
+            # Check if 2nd component is significant (>20% of largest)
+            if comp2_size > 0.20 * comp1_size:
+                print(f"Found 2 large components:")
+                print(f"  Component 1: {comp1_size:,} voxels")
+                print(f"  Component 2: {comp2_size:,} voxels")
+                print(f"  → Force connecting them (likely left + right lung)")
+                
+                # Find closest points between the two components
+                comp1_coords = np.argwhere(labeled_array == comp1_id)
+                comp2_coords = np.argwhere(labeled_array == comp2_id)
+                
+                # Sample for efficiency
+                comp1_sample = comp1_coords[::max(1, len(comp1_coords)//100)]
+                comp2_sample = comp2_coords[::max(1, len(comp2_coords)//100)]
+                
+                min_distance = float('inf')
+                best_p1, best_p2 = None, None
+                
+                for p1 in comp1_sample:
+                    for p2 in comp2_sample:
+                        dist_vector = (p1 - p2) * np.array([self.spacing[2], self.spacing[1], self.spacing[0]])
+                        distance = np.linalg.norm(dist_vector)
+                        if distance < min_distance:
+                            min_distance = distance
+                            best_p1, best_p2 = p1, p2
+                
+                print(f"  Minimum distance between components: {min_distance:.1f} mm")
+                print(f"  Creating bridge...")
+                
+                # Create bridge
+                self._create_bridge_to_skeleton(best_p1, best_p2, skeleton_array)
+                
+                print(f"  ✓ Bridge created - both lungs now connected!")
+            else:
+                print(f"2nd component too small ({comp2_size}/{comp1_size} = {comp2_size/comp1_size:.1%}) - likely noise")
+        
+        self.skeleton = skeleton_array.astype(bool)
     
     def _create_bridge_to_skeleton(self, point1, point2, skeleton_array):
         """Creates a bridge between two points in 3D space and adds it to skeleton"""
@@ -357,6 +428,16 @@ class AirwayGraphAnalyzer:
             node2 = int(row['node-id-dst'])
             length = row['branch-distance']
             G.add_edge(node1, node2, length=length, branch_type=row['branch-type'])
+        
+        # DIAGNOSTIC: Check for disconnected components in the graph
+        num_components = nx.number_connected_components(G)
+        if num_components > 1:
+            print(f"\n🚨 CRITICAL: Graph has {num_components} disconnected components!")
+            components = list(nx.connected_components(G))
+            for i, comp in enumerate(sorted(components, key=len, reverse=True)):
+                print(f"   Component {i+1}: {len(comp)} nodes")
+        else:
+            print(f"✓ Graph is fully connected ({G.number_of_nodes()} nodes, {G.number_of_edges()} edges)")
         
         return G
 
@@ -667,6 +748,65 @@ class AirwayGraphAnalyzer:
                     # Assign generation to the branch (edge)
                     edge = tuple(sorted([current_node, neighbor]))
                     branch_generations[edge] = next_gen
+        
+        # CRITICAL FIX: Handle disconnected components (e.g., isolated right lung)
+        # Assign generation 0 to any unvisited nodes (disconnected from carina)
+        unvisited_nodes = set(self.graph.nodes()) - visited
+        if len(unvisited_nodes) > 0:
+            print(f"\n⚠️  WARNING: Found {len(unvisited_nodes)} nodes disconnected from carina!")
+            print(f"   These likely belong to the other lung (disconnected in skeleton)")
+            print(f"   Assigning them to generation 0 and processing separately...")
+            
+            # Find the largest disconnected component
+            disconnected_components = []
+            remaining = unvisited_nodes.copy()
+            
+            while remaining:
+                # Start BFS from an arbitrary unvisited node
+                start_node = remaining.pop()
+                component = {start_node}
+                comp_queue = deque([start_node])
+                
+                while comp_queue:
+                    node = comp_queue.popleft()
+                    for neighbor in self.graph.neighbors(node):
+                        if neighbor in remaining:
+                            remaining.remove(neighbor)
+                            component.add(neighbor)
+                            comp_queue.append(neighbor)
+                
+                disconnected_components.append(component)
+            
+            print(f"   Found {len(disconnected_components)} disconnected component(s)")
+            
+            # Process each disconnected component
+            for comp_idx, component in enumerate(disconnected_components):
+                print(f"   Component {comp_idx+1}: {len(component)} nodes")
+                
+                # Find the node with highest degree as pseudo-carina for this component
+                comp_carina = max(component, key=lambda n: self.graph.degree(n))
+                
+                # BFS from this component's pseudo-carina
+                node_generations[comp_carina] = -1  # Start at generation -1 like main carina
+                comp_queue = deque([(comp_carina, -1)])
+                comp_visited = {comp_carina}
+                
+                while comp_queue:
+                    current_node, current_gen = comp_queue.popleft()
+                    
+                    for neighbor in self.graph.neighbors(current_node):
+                        if neighbor in component and neighbor not in comp_visited:
+                            if self.graph.degree(current_node) >= 3:
+                                next_gen = current_gen + 1
+                            else:
+                                next_gen = current_gen
+                            
+                            node_generations[neighbor] = next_gen
+                            comp_visited.add(neighbor)
+                            comp_queue.append((neighbor, next_gen))
+                            
+                            edge = tuple(sorted([current_node, neighbor]))
+                            branch_generations[edge] = next_gen
         
         self.generation_assignments = {
             'nodes': node_generations,
@@ -1132,17 +1272,23 @@ class AirwayGraphAnalyzer:
                 # Usa coordinate per distinguere left/right
                 neighbor_positions = [self.graph.nodes[n]['pos'] for n in carina_neighbors]
                 
-                # Assumendo che X aumenta verso destra
-                x_coords = [pos[2] for pos in neighbor_positions]
+                # FIXED: Use Z coordinate (pos[0]) for left/right, not X (pos[2])
+                # pos format is (z, y, x) where Z distinguishes left/right anatomically
+                # IMPORTANT: Use median of ALL nodes, not carina position, as the dividing line
+                # because carina is not necessarily at the anatomical center
                 
-                if len(set(x_coords)) > 1:  # Diversi valori X
+                # Calculate median Z across all graph nodes
+                all_z_coords = [self.graph.nodes[n]['pos'][0] for n in self.graph.nodes()]
+                median_z = np.median(all_z_coords)
+                
+                z_coords = [pos[0] for pos in neighbor_positions]
+                
+                if len(set(z_coords)) > 1:  # Diversi valori Z
                     left_side_nodes = []
                     right_side_nodes = []
                     
-                    carina_x = self.graph.nodes[self.carina_node]['pos'][2]
-                    
                     for node, pos in zip(carina_neighbors, neighbor_positions):
-                        if pos[2] < carina_x:
+                        if pos[0] < median_z:
                             left_side_nodes.append(node)
                         else:
                             right_side_nodes.append(node)

@@ -108,14 +108,15 @@ class CompleteAirwayPipeline:
                 verbose=True
             )
 
-            # PARAMETRI ANTI-BLOB (regola questi in base ai tuoi risultati)
+            # PARAMETRI ANTI-BLOB - DISABILITATO PER DEBUG ASIMMETRIA
+            # Il problema è che un polmone intero viene visto come "blob isolato" e rimosso
             refined_np = ARM.refine(
-                enable_anti_blob=True,              # ✓ ABILITA ANTI-BLOB
-                min_blob_size_voxels=50,           # Blob < 50 voxel → RIMOSSI
-                min_blob_size_mm3=10,              # Blob < 10 mm³ → RIMOSSI
-                max_blob_distance_mm=15.0,         # Blob a >15mm dalla struttura principale → RIMOSSI
-                enable_tubular_smoothing=True,     # ✓ Smoothing che preserva forme tubolari
-                enable_skeleton_reconstruction=False  # Disabilitato (lento), abilitalo solo se necessario
+                enable_anti_blob=False,             # ✗ DISABILITATO per preservare tutte le componenti
+                min_blob_size_voxels=20,           
+                min_blob_size_mm3=5,               
+                max_blob_distance_mm=30.0,         
+                enable_tubular_smoothing=False,    
+                enable_skeleton_reconstruction=False
             )
 
             refined_path = os.path.join(step1_dir, f"{scan_name}_airway_refined_enhanced.nii.gz")
@@ -136,8 +137,8 @@ class CompleteAirwayPipeline:
                 mhd_path=mhd_path,
                 airway_mask_path=airway_path,
                 output_dir=step1_dir,
-                max_hole_size_mm3=100,
-                max_bridge_distance_mm=10.0
+                max_hole_size_mm3=200,              # Aumentato da 100 a 200 per riempire gap più grandi
+                max_bridge_distance_mm=15.0         # Aumentato da 10 a 15 per connettere rami più distanti
             )
 
             airway_path = gap_filled_path
@@ -218,12 +219,14 @@ class CompleteAirwayPipeline:
             
             analyzer = AirwayGraphAnalyzer(cleaned_path)
             
+            # CRITICAL: Use larger reconnect distance to ensure BOTH lungs are connected
+            # With fibrosis, bronchi may be separated by >15mm in skeleton space
             analysis_results = analyzer.run_full_analysis(
                 output_dir=step4_dir,
                 visualize=True,
-                max_reconnect_distance_mm=15.0,
-                min_voxels_for_reconnect=5,
-                max_voxels_for_keep=100
+                max_reconnect_distance_mm=50.0,  # Increased from 15mm to connect both lungs
+                min_voxels_for_reconnect=10,     # Increased to avoid reconnecting tiny noise
+                max_voxels_for_keep=200          # Increased to preserve significant isolated regions
             )
             
             results['analysis_results'] = analysis_results
@@ -590,7 +593,7 @@ def main():
     # CONFIGURATION
     # ============================================================
     
-    INPUT_PATH = r"X:/Francesca Saglimbeni/tesi/vesselsegmentation/airway_segmentation/test_data"
+    INPUT_PATH = r"X:/Francesca Saglimbeni/tesi/vesselsegmentation/OSIC/OSIC_final"
     OUTPUT_DIR = "output_results_with_fibrosis"
     BATCH_MODE = True
     FAST_SEGMENTATION = False

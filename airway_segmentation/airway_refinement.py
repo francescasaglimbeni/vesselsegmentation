@@ -44,8 +44,8 @@ class EnhancedAirwayRefinementModule:
             if len(thresholds) >= 2:
                 t0, t1 = thresholds[0], thresholds[1]
                 central_threshold = min(t0 + 100, -700)
-                intermediate_threshold = min(t1 + 80, -600)
-                peripheral_threshold = min(t1 + 60, -500)
+                intermediate_threshold = min(t1 + 100, -550)   # Rilassato da -600 a -550
+                peripheral_threshold = min(t1 + 120, -400)     # Rilassato da -500 a -400 per catturare periferie
             elif len(thresholds) == 1:
                 t0 = thresholds[0]
                 central_threshold = min(t0 + 100, -700)
@@ -55,10 +55,10 @@ class EnhancedAirwayRefinementModule:
                 raise ValueError("No valid thresholds returned")
         except Exception as e:
             if self.verbose:
-                print(f"  Warning: Otsu failed ({e}), using defaults")
-            central_threshold = -850
-            intermediate_threshold = -750
-            peripheral_threshold = -650
+                print(f"  Warning: Otsu failed ({e}), using relaxed defaults")
+            central_threshold = -900           # Era -850, ridotto per catturare più aria
+            intermediate_threshold = -700      # Era -750, rilassato
+            peripheral_threshold = -500        # Era -650, molto rilassato per periferie
         
         thresholds_dict = {
             'central': central_threshold,
@@ -202,11 +202,12 @@ class EnhancedAirwayRefinementModule:
             hu_values = self.img[comp_mask]
             mean_hu = np.mean(hu_values)
             
-            # Criteri per "pallino spurio":
+            # Criteri RILASSATI per "pallino spurio" (meno aggressivi per mantenere rami periferici):
             is_blob = (
-                elongation < max_elongation_ratio and  # Non abbastanza tubolare
-                min_distance > max_blob_distance_mm and  # Troppo distante
-                mean_hu > -800  # HU non chiaramente aria
+                elongation < 2.0 and               # Ridotto da max_elongation_ratio (più permissivo)
+                min_distance > max_blob_distance_mm and
+                mean_hu > -700 and                 # Era -800, ora più permissivo
+                size < 30                          # Rimuovi solo blob molto piccoli
             )
             
             if is_blob:

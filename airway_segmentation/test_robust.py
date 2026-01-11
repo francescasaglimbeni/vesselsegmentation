@@ -18,7 +18,7 @@ class EnhancedCarinaDetector:
     - Preservazione completa di tutti i rami bronchiali
     """
     
-    def __init__(self, mask, spacing, verbose=True, precut_z=390, trachea_remove_fraction=0.3):
+    def __init__(self, mask, spacing, verbose=True, precut_z=390, trachea_remove_fraction=0.15):
         """
         Args:
             mask: Maschera 3D delle vie aeree (numpy array)
@@ -26,7 +26,7 @@ class EnhancedCarinaDetector:
             verbose: Print debug information
             precut_z: Z-level per pre-cut iniziale (default 390)
             trachea_remove_fraction: Fraction of the identified trachea length to remove
-                starting from the superior end (default 0.3 = remove top 30%).
+                starting from the superior end (default 0.15 = remove only top 15% - VERY CONSERVATIVE!).
         """
         self.mask = mask
         self.spacing = spacing
@@ -303,9 +303,15 @@ class EnhancedCarinaDetector:
         self.cleaned_mask = self.precut_mask.copy()
         
         # Rimuovi solo la porzione superiore della trachea: usare una frazione configurabile
+        # MA con un margine di sicurezza di almeno 15mm sopra la carina
+        safety_margin_mm = 15.0
+        safety_margin_slices = int(safety_margin_mm / self.spacing[2])
+        
         remove_slices = max(1, int(self.trachea_length * self.trachea_remove_fraction))
         # Calcola indice di inizio rimozione (inclusive)
-        removal_start_z = max(self.trachea_bottom_z, self.trachea_top_z - remove_slices + 1)
+        # IMPORTANTE: non scendere sotto trachea_bottom + safety_margin
+        removal_start_z = max(self.trachea_bottom_z + safety_margin_slices, 
+                             self.trachea_top_z - remove_slices + 1)
 
         for z in range(removal_start_z, self.trachea_top_z + 1):
             # Rimuovi solo la componente tracheale, non tutto lo slice

@@ -10,3 +10,4 @@ validation_pipeline/__pycache__/
 validation_pipeline/validation_intrinsic.csv
 validation_pipeline/venv_val/
 validation_pipeline/output/
+OSIC/OSIC_final/
