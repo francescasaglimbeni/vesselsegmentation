@@ -593,7 +593,7 @@ def main():
     # CONFIGURATION
     # ============================================================
     
-    INPUT_PATH = r"X:\Francesca Saglimbeni\tesi\datasets\OSIC_touse"
+    INPUT_PATH = r"X:\Francesca Saglimbeni\tesi\datasets\dataset_OSIC_final"
     OUTPUT_DIR = "output_results_with_fibrosis"
     BATCH_MODE = True
     FAST_SEGMENTATION = False

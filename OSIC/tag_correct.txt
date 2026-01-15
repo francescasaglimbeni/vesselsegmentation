@@ -1,0 +1,346 @@
+======================================================================
+DICOM TAG ANALYSIS REPORT
+======================================================================
+
+Timestamp: 2026-01-15T11:14:55.282310
+Input folder: X:\Francesca Saglimbeni\tesi\results\results_OSIC\CORRECT\DICOM
+Total patients: 15
+
+======================================================================
+STATISTICS
+======================================================================
+Total unique tags found: 58
+Tags common to ALL patients: 40
+Tags in at least 50% patients: 1
+
+======================================================================
+COMMON TAGS (present in ALL patients)
+======================================================================
+
+--- CONSTANT TAGS (12 tags) ---
+(Same value across all patients)
+
+BitsAllocated                            = 16
+BodyPartExamined                         = Chest
+DeidentificationMethod                   = Table;
+ImageOrientationPatient                  = ['1.0', '0.0', '0.0', '0.0', '1.0', '0.0']
+Modality                                 = CT
+PatientSex                               = 
+PhotometricInterpretation                = MONOCHROME2
+RotationDirection                        = CW
+SamplesPerPixel                          = 1
+StudyID                                  = 
+WindowCenter                             = -500.0
+WindowWidth                              = -1500.0
+
+--- VARIABLE TAGS (28 tags) ---
+(Different values across patients)
+
+
+BitsStored (2 different values):
+  - 12
+  - 16
+
+Columns (2 different values):
+  - 512
+  - 768
+
+ConvolutionKernel (9 different values):
+  - B41f
+  - B50f
+  - BONEPLUS
+  - C
+  - F
+  - FC01
+  - L
+  - YC
+  - ['I50f', '3']
+
+FrameOfReferenceUID (15 different values):
+  - 2.25.101620500601016521223324645841506278865
+  - 2.25.107222033031119073413774032985125445055
+  - 2.25.123081401274215038274301530120755742303
+  - 2.25.137081634522873165452179308473198147076
+  - 2.25.143175404327517240026396724755842732376
+  - 2.25.144456558524548820015045792114583039255
+  - 2.25.145280983379892090408836326254764157961
+  - 2.25.145342304341169856685157101786085243474
+  - 2.25.155444539893866409156154937920813761966
+  - 2.25.25119537838907963213916613452799334242
+  ... and 5 more values
+
+GantryDetectorTilt (3 different values):
+  - +0.0
+  - 0
+  - 0.000000
+
+HighBit (2 different values):
+  - 11
+  - 15
+
+ImagePositionPatient (450 different values):
+  - ['-150.5', '-9.5', '-163.300003']
+  - ['-150.5', '-9.5', '-164.000015']
+  - ['-150.5', '-9.5', '-164.700027']
+  - ['-150.5', '-9.5', '-165.400009']
+  - ['-150.5', '-9.5', '-166.100021']
+  - ['-150.5', '-9.5', '-166.800003']
+  - ['-150.5', '-9.5', '-167.500015']
+  - ['-150.5', '-9.5', '-168.200027']
+  - ['-150.5', '-9.5', '-168.900009']
+  - ['-150.5', '-9.5', '-169.600021']
+  ... and 440 more values
+
+ImageType (4 different values):
+  - ['ORIGINAL', 'PRIMARY', 'AXIAL', 'CT_SOM5 SPI']
+  - ['ORIGINAL', 'PRIMARY', 'AXIAL', 'CT_SOM7 SPI DUAL', 'STD', 'SNRG', 'DET_AB']
+  - ['ORIGINAL', 'PRIMARY', 'AXIAL', 'HELIX']
+  - ['ORIGINAL', 'PRIMARY', 'AXIAL']
+
+InstanceNumber (114 different values):
+  - 1
+  - 10
+  - 100
+  - 101
+  - 102
+  - 103
+  - 104
+  - 105
+  - 106
+  - 107
+  ... and 104 more values
+
+KVP (3 different values):
+  - 100
+  - 120
+  - 140
+
+Manufacturer (4 different values):
+  - GE MEDICAL SYSTEMS
+  - Philips
+  - SIEMENS
+  - TOSHIBA
+
+ManufacturerModelName (8 different values):
+  - Aquilion
+  - Brilliance 16P
+  - Brilliance 40
+  - Brilliance 64
+  - LightSpeed VCT
+  - OsiriX
+  - SOMATOM Definition Flash
+  - iCT 256
+
+PatientID (15 different values):
+  - ID00020637202178344345685
+  - ID00030637202181211009029
+  - ID00035637202182204917484
+  - ID00038637202182690843176
+  - ID00075637202198610425520
+  - ID00104637202208063407045
+  - ID00134637202223873059688
+  - ID00180637202240177410333
+  - ID00219637202258203123958
+  - ID00291637202279398396106
+  ... and 5 more values
+
+PatientName (15 different values):
+  - ['I', 'D', '0', '0', '0', '2', '0', '6', '3', '7', '2', '0', '2', '1', '7', '8', '3', '4', '4', '3', '4', '5', '6', '8', '5']
+  - ['I', 'D', '0', '0', '0', '3', '0', '6', '3', '7', '2', '0', '2', '1', '8', '1', '2', '1', '1', '0', '0', '9', '0', '2', '9']
+  - ['I', 'D', '0', '0', '0', '3', '5', '6', '3', '7', '2', '0', '2', '1', '8', '2', '2', '0', '4', '9', '1', '7', '4', '8', '4']
+  - ['I', 'D', '0', '0', '0', '3', '8', '6', '3', '7', '2', '0', '2', '1', '8', '2', '6', '9', '0', '8', '4', '3', '1', '7', '6']
+  - ['I', 'D', '0', '0', '0', '7', '5', '6', '3', '7', '2', '0', '2', '1', '9', '8', '6', '1', '0', '4', '2', '5', '5', '2', '0']
+  - ['I', 'D', '0', '0', '1', '0', '4', '6', '3', '7', '2', '0', '2', '2', '0', '8', '0', '6', '3', '4', '0', '7', '0', '4', '5']
+  - ['I', 'D', '0', '0', '1', '3', '4', '6', '3', '7', '2', '0', '2', '2', '2', '3', '8', '7', '3', '0', '5', '9', '6', '8', '8']
+  - ['I', 'D', '0', '0', '1', '8', '0', '6', '3', '7', '2', '0', '2', '2', '4', '0', '1', '7', '7', '4', '1', '0', '3', '3', '3']
+  - ['I', 'D', '0', '0', '2', '1', '9', '6', '3', '7', '2', '0', '2', '2', '5', '8', '2', '0', '3', '1', '2', '3', '9', '5', '8']
+  - ['I', 'D', '0', '0', '2', '9', '1', '6', '3', '7', '2', '0', '2', '2', '7', '9', '3', '9', '8', '3', '9', '6', '1', '0', '6']
+  ... and 5 more values
+
+PatientPosition (2 different values):
+  - FFS
+  - HFS
+
+PixelRepresentation (2 different values):
+  - 0
+  - 1
+
+PixelSpacing (15 different values):
+  - ['0.471354167', '0.471354167']
+  - ['0.481771', '0.481771']
+  - ['0.536458', '0.536458']
+  - ['0.599609375', '0.599609375']
+  - ['0.625', '0.625']
+  - ['0.664062', '0.664062']
+  - ['0.665', '0.665']
+  - ['0.683', '0.683']
+  - ['0.702', '0.702']
+  - ['0.7109375', '0.7109375']
+  ... and 5 more values
+
+PositionReferenceIndicator (3 different values):
+  - 
+  - SN
+  - XY
+
+RescaleIntercept (2 different values):
+  - -1024
+  - 0
+
+RescaleSlope (2 different values):
+  - 1
+  - 1.000000
+
+Rows (2 different values):
+  - 512
+  - 768
+
+SOPInstanceUID (450 different values):
+  - 1.2.276.0.7230010.3.1.4.0.37492.1591342772.175077
+  - 1.2.276.0.7230010.3.1.4.0.37492.1591342772.175086
+  - 1.2.276.0.7230010.3.1.4.0.37492.1591342773.175108
+  - 1.2.276.0.7230010.3.1.4.0.37492.1591342773.175166
+  - 1.2.276.0.7230010.3.1.4.0.37492.1591342773.175167
+  - 1.2.276.0.7230010.3.1.4.0.37492.1591342773.175168
+  - 1.2.276.0.7230010.3.1.4.0.37492.1591342773.175169
+  - 1.2.276.0.7230010.3.1.4.0.37492.1591342773.175170
+  - 1.2.276.0.7230010.3.1.4.0.37492.1591342773.175171
+  - 1.2.276.0.7230010.3.1.4.0.37492.1591342773.175172
+  ... and 440 more values
+
+SeriesInstanceUID (15 different values):
+  - 1.3.6.1.4.1.19291.2.1.2.1162211771921352226130355727992
+  - 1.3.6.1.4.1.19291.2.1.2.1162211771921352226130356651798
+  - 2.25.105922606101441320273365700897218409061
+  - 2.25.121414269434985905490835171212674202312
+  - 2.25.128639639951547520981242904026482003258
+  - 2.25.130291453324942120842410187077163326981
+  - 2.25.136509711882067274997145019838799802041
+  - 2.25.168335002352647095587144455728050514290
+  - 2.25.22475323173501915904014234787696032130
+  - 2.25.33756595636720760744116859736038965628
+  ... and 5 more values
+
+SliceLocation (439 different values):
+  - -1000.00
+  - -1001.00
+  - -1046.8
+  - -1047.8
+  - -1048.8
+  - -1049.8
+  - -1050.8
+  - -1051.8
+  - -1052.8
+  - -1053.8
+  ... and 429 more values
+
+SliceThickness (7 different values):
+  - 0.5
+  - 0.625000
+  - 0.90
+  - 1
+  - 1.00
+  - 1.000000
+  - 1.500000
+
+StudyInstanceUID (15 different values):
+  - 2.25.111153670838482476500693490553448043381
+  - 2.25.138385002285841551528805699638475741461
+  - 2.25.154291758156513417165499216834012629461
+  - 2.25.160391221813909809735616378102765543429
+  - 2.25.165140428821752204623483230773210307803
+  - 2.25.168009088382578703118904593371568532454
+  - 2.25.27570211803454260334890711816742630716
+  - 2.25.33331495847264711427783446025553637344
+  - 2.25.46683361475185465349755690410809772979
+  - 2.25.49904767058783093702173803814538106670
+  ... and 5 more values
+
+TableHeight (15 different values):
+  - +101.00
+  - +73.00
+  - +80.00
+  - +82.00
+  - 100.000000
+  - 103.000000
+  - 111
+  - 119
+  - 120.500000
+  - 156.000000
+  ... and 5 more values
+
+XRayTubeCurrent (141 different values):
+  - 1026
+  - 1072
+  - 128
+  - 129
+  - 131
+  - 132
+  - 133
+  - 135
+  - 137
+  - 139
+  ... and 131 more values
+
+======================================================================
+TAG FREQUENCY TABLE
+======================================================================
+
+ImageType                                            15/  15 (100.0%)
+SOPInstanceUID                                       15/  15 (100.0%)
+Modality                                             15/  15 (100.0%)
+Manufacturer                                         15/  15 (100.0%)
+ManufacturerModelName                                15/  15 (100.0%)
+PatientName                                          15/  15 (100.0%)
+PatientID                                            15/  15 (100.0%)
+PatientSex                                           15/  15 (100.0%)
+DeidentificationMethod                               15/  15 (100.0%)
+BodyPartExamined                                     15/  15 (100.0%)
+SliceThickness                                       15/  15 (100.0%)
+KVP                                                  15/  15 (100.0%)
+GantryDetectorTilt                                   15/  15 (100.0%)
+TableHeight                                          15/  15 (100.0%)
+RotationDirection                                    15/  15 (100.0%)
+XRayTubeCurrent                                      15/  15 (100.0%)
+ConvolutionKernel                                    15/  15 (100.0%)
+PatientPosition                                      15/  15 (100.0%)
+StudyInstanceUID                                     15/  15 (100.0%)
+SeriesInstanceUID                                    15/  15 (100.0%)
+StudyID                                              15/  15 (100.0%)
+InstanceNumber                                       15/  15 (100.0%)
+ImagePositionPatient                                 15/  15 (100.0%)
+ImageOrientationPatient                              15/  15 (100.0%)
+FrameOfReferenceUID                                  15/  15 (100.0%)
+PositionReferenceIndicator                           15/  15 (100.0%)
+SliceLocation                                        15/  15 (100.0%)
+SamplesPerPixel                                      15/  15 (100.0%)
+PhotometricInterpretation                            15/  15 (100.0%)
+Rows                                                 15/  15 (100.0%)
+Columns                                              15/  15 (100.0%)
+PixelSpacing                                         15/  15 (100.0%)
+BitsAllocated                                        15/  15 (100.0%)
+BitsStored                                           15/  15 (100.0%)
+HighBit                                              15/  15 (100.0%)
+PixelRepresentation                                  15/  15 (100.0%)
+WindowCenter                                         15/  15 (100.0%)
+WindowWidth                                          15/  15 (100.0%)
+RescaleIntercept                                     15/  15 (100.0%)
+RescaleSlope                                         15/  15 (100.0%)
+SpecificCharacterSet                                 13/  15 ( 86.7%)
+SpacingBetweenSlices                                  7/  15 ( 46.7%)
+RescaleType                                           6/  15 ( 40.0%)
+DistanceSourceToDetector                              5/  15 ( 33.3%)
+DistanceSourceToPatient                               5/  15 ( 33.3%)
+GeneratorPower                                        5/  15 ( 33.3%)
+FocalSpots                                            5/  15 ( 33.3%)
+PatientOrientation                                    4/  15 ( 26.7%)
+SingleCollimationWidth                                4/  15 ( 26.7%)
+TotalCollimationWidth                                 4/  15 ( 26.7%)
+TableSpeed                                            4/  15 ( 26.7%)
+TableFeedPerRotation                                  4/  15 ( 26.7%)
+SpiralPitchFactor                                     4/  15 ( 26.7%)
+RevolutionTime                                        2/  15 ( 13.3%)
+PixelPaddingValue                                     2/  15 ( 13.3%)
+SmallestImagePixelValue                               2/  15 ( 13.3%)
+LargestImagePixelValue                                2/  15 ( 13.3%)
+WindowCenterWidthExplanation                          2/  15 ( 13.3%)
