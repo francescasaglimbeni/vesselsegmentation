@@ -202,12 +202,12 @@ class EnhancedAirwayRefinementModule:
             hu_values = self.img[comp_mask]
             mean_hu = np.mean(hu_values)
             
-            # Criteri RILASSATI per "pallino spurio" (meno aggressivi per mantenere rami periferici):
+            # Criteri MOLTO CONSERVATIVI per "pallino spurio" (preserva rami periferici, rimuove solo artefatti chiari):
             is_blob = (
-                elongation < 2.0 and               # Ridotto da max_elongation_ratio (più permissivo)
+                elongation < 1.5 and               # Solo forme molto sferiche (non tubolari)
                 min_distance > max_blob_distance_mm and
-                mean_hu > -700 and                 # Era -800, ora più permissivo
-                size < 30                          # Rimuovi solo blob molto piccoli
+                mean_hu > -650 and                 # Solo se HU borderline (non chiaramente aria)
+                size < 15                          # Rimuovi solo blob estremamente piccoli
             )
             
             if is_blob:

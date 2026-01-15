@@ -24,6 +24,16 @@ class LiteratureReference:
 # LITERATURE DATABASE
 # ============================================================
 
+# Technical validation thresholds (for pipeline reliability)
+TECHNICAL_LIMITS = {
+    "max_generation": (5, 35),  # Beyond 35 is over-segmentation
+    "airway_volume_ml": (5, 600),  # Beyond 600 includes extra tissues
+    "pc_ratio": (0.0, 5.0),  # Beyond 5 is calculation error
+    "tapering_ratio": (0.5, 1.0),  # Must be physically plausible
+    "branch_count": (50, 5000),  # Minimum viable tree
+    "tortuosity": (1.0, 3.0),  # Beyond 3 is likely artifact
+}
+
 LITERATURE = {
 
     # --- SEGMENTATION ---
@@ -144,6 +154,7 @@ def load_case_data(case_dir):
 # ============================================================
 
 def check_value(name, value, ref: LiteratureReference):
+    """Clinical validation against literature (for healthy subjects)"""
     if value is None or (isinstance(value, float) and np.isnan(value)):
         return "FAIL", "Value missing"
 
@@ -156,9 +167,96 @@ def check_value(name, value, ref: LiteratureReference):
     return "FAIL", "Implausible value"
 
 
+def check_technical(name, value, limits: Tuple[float, float]):
+    """Technical validation (pipeline reliability, disease-agnostic)"""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return "FAIL", "Value missing"
+    
+    if limits[0] <= value <= limits[1]:
+        return "PASS", "Technically plausible"
+    
+    return "FAIL", f"Outside technical limits ({limits[0]}-{limits[1]})"
+
+
 # ============================================================
 # VALIDATION STEPS
 # ============================================================
+
+def validate_technical_reliability(case_data):
+    """Valida l'affidabilità tecnica della pipeline (non i valori clinici)"""
+    results = {}
+    advanced_metrics = case_data.get('advanced_metrics', {})
+    
+    # 1. Volume - check for gross over-segmentation
+    vol_ml = advanced_metrics.get("total_volume_mm3", 0) / 1000
+    status, msg = check_technical("airway_volume_ml", vol_ml, TECHNICAL_LIMITS["airway_volume_ml"])
+    results["volume_technical"] = {
+        "value": round(vol_ml, 2),
+        "status": status,
+        "message": msg,
+        "interpretation": "Volume should be 5-600 ml. >600 suggests inclusion of non-airway tissues."
+    }
+    
+    # 2. Max generation - check for over-segmentation
+    weibel = case_data.get('weibel_df')
+    if weibel is not None and len(weibel) > 0:
+        max_gen = int(weibel["generation"].max())
+        status, msg = check_technical("max_generation", max_gen, TECHNICAL_LIMITS["max_generation"])
+        results["max_generation_technical"] = {
+            "value": max_gen,
+            "status": status,
+            "message": msg,
+            "interpretation": "Max generation >35 indicates noise/artifacts in segmentation."
+        }
+    
+    # 3. PC ratio - check for calculation errors
+    pc = advanced_metrics.get("peripheral_to_central_ratio", np.nan)
+    if not np.isnan(pc):
+        status, msg = check_technical("pc_ratio", pc, TECHNICAL_LIMITS["pc_ratio"])
+        results["pc_ratio_technical"] = {
+            "value": round(pc, 3),
+            "status": status,
+            "message": msg,
+            "interpretation": "PC ratio >5 indicates calculation error. Low values (0-0.3) may reflect fibrosis."
+        }
+    
+    # 4. Branch count - minimum viable
+    branches_df = case_data.get('branches_df')
+    if branches_df is not None and len(branches_df) > 0:
+        n_branches = len(branches_df)
+        status, msg = check_technical("branch_count", n_branches, TECHNICAL_LIMITS["branch_count"])
+        results["branch_count_technical"] = {
+            "value": n_branches,
+            "status": status,
+            "message": msg,
+            "interpretation": "Branch count <50 suggests failed segmentation. Low counts may reflect disease severity."
+        }
+    
+    # 5. Tapering ratio - physical plausibility
+    tapering_df = case_data.get('tapering_df')
+    if tapering_df is not None and len(tapering_df) > 0 and "diameter_ratio" in tapering_df.columns:
+        taper = tapering_df["diameter_ratio"].mean()
+        status, msg = check_technical("tapering_ratio", taper, TECHNICAL_LIMITS["tapering_ratio"])
+        results["tapering_ratio_technical"] = {
+            "value": round(taper, 3),
+            "status": status,
+            "message": msg,
+            "interpretation": "Tapering ratio should be 0.5-1.0. Outside suggests segmentation artifacts."
+        }
+    
+    # 6. Tortuosity - artifact detection
+    tort = advanced_metrics.get("mean_tortuosity", np.nan)
+    if not np.isnan(tort):
+        status, msg = check_technical("tortuosity", tort, TECHNICAL_LIMITS["tortuosity"])
+        results["tortuosity_technical"] = {
+            "value": round(tort, 3),
+            "status": status,
+            "message": msg,
+            "interpretation": "Tortuosity >3 likely indicates segmentation noise. Elevated values may reflect disease."
+        }
+    
+    return results
+
 
 def validate_segmentation(advanced_metrics):
     """Valida la qualità della segmentazione delle vie aeree"""
@@ -369,8 +467,18 @@ def validate_single_case(case_data, output_dir):
 
     advanced_metrics = case_data.get('advanced_metrics', {})
 
+    # ===== TECHNICAL VALIDATION (Pipeline Reliability) =====
+    print("\n[TECHNICAL] Validating pipeline reliability...")
+    try:
+        validation["technical"] = validate_technical_reliability(case_data)
+        print(f"  ✓ Technical validation completed")
+    except Exception as e:
+        validation["technical"] = {"error": str(e)}
+        print(f"  ✗ Technical validation failed: {e}")
+
+    # ===== CLINICAL VALIDATION (Literature Comparison) =====
     # Step 1: Segmentation
-    print("\n[1/4] Validating segmentation...")
+    print("\n[CLINICAL 1/4] Validating segmentation...")
     try:
         validation["segmentation"] = validate_segmentation(advanced_metrics)
         print(f"  ✓ Segmentation validation completed")
@@ -379,7 +487,7 @@ def validate_single_case(case_data, output_dir):
         print(f"  ✗ Segmentation validation failed: {e}")
 
     # Step 2: Graph
-    print("\n[2/4] Validating graph structure...")
+    print("\n[CLINICAL 2/4] Validating graph structure...")
     try:
         validation["graph"] = validate_graph(case_data)
         print(f"  ✓ Graph validation completed")
@@ -388,7 +496,7 @@ def validate_single_case(case_data, output_dir):
         print(f"  ✗ Graph validation failed: {e}")
 
     # Step 3: Weibel
-    print("\n[3/4] Validating Weibel generations and diameters...")
+    print("\n[CLINICAL 3/4] Validating Weibel generations and diameters...")
     try:
         validation["weibel"] = validate_weibel(case_data)
         print(f"  ✓ Weibel validation completed")
@@ -397,7 +505,7 @@ def validate_single_case(case_data, output_dir):
         print(f"  ✗ Weibel validation failed: {e}")
 
     # Step 4: Fibrosis
-    print("\n[4/4] Validating fibrosis metrics...")
+    print("\n[CLINICAL 4/4] Validating fibrosis metrics...")
     try:
         validation["fibrosis"] = validate_fibrosis(advanced_metrics)
         print(f"  ✓ Fibrosis validation completed")
@@ -405,37 +513,59 @@ def validate_single_case(case_data, output_dir):
         validation["fibrosis"] = {"error": str(e)}
         print(f"  ✗ Fibrosis validation failed: {e}")
 
-    # Overall usability assessment
-    flags = []
-    warnings = 0
-    fails = 0
+    # ===== TECHNICAL RELIABILITY ASSESSMENT =====
+    tech_flags = []
+    tech_fails = 0
     
-    for block_name, block in validation.items():
-        for metric_name, v in block.items():
+    if "technical" in validation:
+        for metric_name, v in validation["technical"].items():
             if isinstance(v, dict) and "status" in v:
-                flags.append(v["status"])
-                if v["status"] == "WARNING":
-                    warnings += 1
-                elif v["status"] == "FAIL":
-                    fails += 1
-
-    pipeline_usable = fails == 0
+                tech_flags.append(v["status"])
+                if v["status"] == "FAIL":
+                    tech_fails += 1
+    
+    pipeline_reliable = tech_fails == 0
+    
+    # ===== CLINICAL COMPARISON (for reference, not for reliability) =====
+    clinical_flags = []
+    clinical_warnings = 0
+    clinical_fails = 0
+    
+    for block_name in ["segmentation", "graph", "weibel", "fibrosis"]:
+        if block_name in validation:
+            for metric_name, v in validation[block_name].items():
+                if isinstance(v, dict) and "status" in v:
+                    clinical_flags.append(v["status"])
+                    if v["status"] == "WARNING":
+                        clinical_warnings += 1
+                    elif v["status"] == "FAIL":
+                        clinical_fails += 1
     
     validation["SUMMARY"] = {
-        "PIPELINE_USABLE": pipeline_usable,
-        "total_checks": len(flags),
-        "passed": flags.count("PASS"),
-        "warnings": warnings,
-        "failed": fails
+        "PIPELINE_RELIABLE": pipeline_reliable,
+        "technical_checks": len(tech_flags),
+        "technical_passed": tech_flags.count("PASS"),
+        "technical_failed": tech_fails,
+        "clinical_checks": len(clinical_flags),
+        "clinical_passed": clinical_flags.count("PASS"),
+        "clinical_warnings": clinical_warnings,
+        "clinical_failed": clinical_fails,
+        "note": "Clinical deviations expected in fibrotic patients. Technical reliability determines usability."
     }
 
     print(f"\n{'='*60}")
     print(f"VALIDATION SUMMARY:")
-    print(f"  Total checks: {len(flags)}")
-    print(f"  ✓ Passed: {flags.count('PASS')}")
-    print(f"  ⚠ Warnings: {warnings}")
-    print(f"  ✗ Failed: {fails}")
-    print(f"  Pipeline usable: {'YES' if pipeline_usable else 'NO'}")
+    print(f"\n  === TECHNICAL RELIABILITY (Pipeline Quality) ===")
+    print(f"  Total checks: {len(tech_flags)}")
+    print(f"  ✓ Passed: {tech_flags.count('PASS')}")
+    print(f"  ✗ Failed: {tech_fails}")
+    print(f"  → Pipeline reliable: {'YES' if pipeline_reliable else 'NO'}")
+    print(f"\n  === CLINICAL COMPARISON (vs Healthy Literature) ===")
+    print(f"  Total checks: {len(clinical_flags)}")
+    print(f"  ✓ Passed: {clinical_flags.count('PASS')}")
+    print(f"  ⚠ Warnings: {clinical_warnings}")
+    print(f"  ✗ Failed: {clinical_fails}")
+    print(f"  → Note: Deviations expected in fibrotic patients")
     print(f"{'='*60}\n")
 
     # Save validation report
@@ -495,29 +625,37 @@ def validate_pipeline_folder(output_root):
             # Extract summary
             summary_data = {
                 "case": case_name,
-                "status": "USABLE" if validation["SUMMARY"]["PIPELINE_USABLE"] else "NOT_USABLE",
-                "total_checks": validation["SUMMARY"]["total_checks"],
-                "passed": validation["SUMMARY"]["passed"],
-                "warnings": validation["SUMMARY"]["warnings"],
-                "failed": validation["SUMMARY"]["failed"]
+                "status": "RELIABLE" if validation["SUMMARY"]["PIPELINE_RELIABLE"] else "UNRELIABLE",
+                "tech_checks": validation["SUMMARY"]["technical_checks"],
+                "tech_passed": validation["SUMMARY"]["technical_passed"],
+                "tech_failed": validation["SUMMARY"]["technical_failed"],
+                "clinical_checks": validation["SUMMARY"]["clinical_checks"],
+                "clinical_passed": validation["SUMMARY"]["clinical_passed"],
+                "clinical_warnings": validation["SUMMARY"]["clinical_warnings"],
+                "clinical_failed": validation["SUMMARY"]["clinical_failed"]
             }
             
-            # Add key metrics
-            if "segmentation" in validation and "airway_volume_ml" in validation["segmentation"]:
-                summary_data["volume_ml"] = validation["segmentation"]["airway_volume_ml"].get("value")
-                summary_data["volume_status"] = validation["segmentation"]["airway_volume_ml"].get("status")
-            
-            if "graph" in validation and "branch_count" in validation["graph"]:
-                summary_data["branch_count"] = validation["graph"]["branch_count"].get("value")
-                summary_data["branch_count_status"] = validation["graph"]["branch_count"].get("status")
-            
-            if "weibel" in validation and "max_generation" in validation["weibel"]:
-                summary_data["max_generation"] = validation["weibel"]["max_generation"].get("value")
-                summary_data["max_generation_status"] = validation["weibel"]["max_generation"].get("status")
-            
-            if "fibrosis" in validation and "pc_ratio" in validation["fibrosis"]:
-                summary_data["pc_ratio"] = validation["fibrosis"]["pc_ratio"].get("value")
-                summary_data["pc_ratio_status"] = validation["fibrosis"]["pc_ratio"].get("status")
+            # Add key technical metrics
+            if "technical" in validation:
+                if "volume_technical" in validation["technical"]:
+                    summary_data["volume_ml"] = validation["technical"]["volume_technical"].get("value")
+                    summary_data["volume_tech_status"] = validation["technical"]["volume_technical"].get("status")
+                
+                if "branch_count_technical" in validation["technical"]:
+                    summary_data["branch_count"] = validation["technical"]["branch_count_technical"].get("value")
+                    summary_data["branch_count_tech_status"] = validation["technical"]["branch_count_technical"].get("status")
+                
+                if "max_generation_technical" in validation["technical"]:
+                    summary_data["max_generation"] = validation["technical"]["max_generation_technical"].get("value")
+                    summary_data["max_gen_tech_status"] = validation["technical"]["max_generation_technical"].get("status")
+                
+                if "pc_ratio_technical" in validation["technical"]:
+                    summary_data["pc_ratio"] = validation["technical"]["pc_ratio_technical"].get("value")
+                    summary_data["pc_ratio_tech_status"] = validation["technical"]["pc_ratio_technical"].get("status")
+                
+                if "tapering_ratio_technical" in validation["technical"]:
+                    summary_data["tapering_ratio"] = validation["technical"]["tapering_ratio_technical"].get("value")
+                    summary_data["tapering_tech_status"] = validation["technical"]["tapering_ratio_technical"].get("status")
 
             summary.append(summary_data)
 
@@ -540,10 +678,12 @@ def validate_pipeline_folder(output_root):
     print(f"# BATCH VALIDATION COMPLETE")
     print(f"{'#'*80}")
     print(f"\nProcessed {len(case_dirs)} cases:")
-    print(f"  ✓ Usable: {len(df[df['status'] == 'USABLE'])}")
-    print(f"  ✗ Not usable: {len(df[df['status'] == 'NOT_USABLE'])}")
+    print(f"  ✓ Technically reliable: {len(df[df['status'] == 'RELIABLE'])}")
+    print(f"  ✗ Technically unreliable: {len(df[df['status'] == 'UNRELIABLE'])}")
     print(f"  ⊗ Errors: {len(df[df['status'] == 'ERROR'])}")
     print(f"  - Skipped: {len(df[df['status'] == 'SKIPPED'])}")
+    print(f"\nNote: Cases marked RELIABLE have no technical pipeline errors.")
+    print(f"      Clinical deviations are expected in fibrotic patients.")
     print(f"\nSummary saved to: {summary_csv}\n")
 
     return df
@@ -552,7 +692,7 @@ def main():
     """Entry point per la validazione batch della pipeline"""
     
     # Configurazione percorsi
-    DATA_ROOT = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\airway_segmentation\output_results_with_fibrosis")
+    DATA_ROOT = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\output_results_with_fibrosis")
     OUTPUT_CSV = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\airway_pipeline_validation_summary.csv")
     
     print(f"\n{'='*80}")
@@ -586,12 +726,13 @@ def main():
             print(f"\nCase status distribution:")
             print(df['status'].value_counts())
         
-        if 'failed' in df.columns:
-            usable_cases = df[df['status'] == 'USABLE']
-            if len(usable_cases) > 0:
-                print(f"\nQuality metrics for USABLE cases:")
-                print(f"  Average failed checks: {usable_cases['failed'].mean():.2f}")
-                print(f"  Average warnings: {usable_cases['warnings'].mean():.2f}")
+        if 'tech_failed' in df.columns:
+            reliable_cases = df[df['status'] == 'RELIABLE']
+            if len(reliable_cases) > 0:
+                print(f"\nQuality metrics for RELIABLE cases:")
+                print(f"  Average technical failures: {reliable_cases['tech_failed'].mean():.2f}")
+                print(f"  Average clinical deviations: {reliable_cases['clinical_failed'].mean():.2f}")
+                print(f"  Average clinical warnings: {reliable_cases['clinical_warnings'].mean():.2f}")
         
         print(f"\n{'='*80}\n")
         

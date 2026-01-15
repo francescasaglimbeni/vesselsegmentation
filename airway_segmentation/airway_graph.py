@@ -890,12 +890,22 @@ class AirwayGraphAnalyzer:
         
         return self.branch_lengths_df
     
-    def analyze_diameters(self):
-        """Calculates diameters along each branch using distance transform"""
+    def analyze_diameters(self, use_robust_calculation=True, exclude_terminal_percent=10):
+        """Calculates diameters along each branch using distance transform
+        
+        Args:
+            use_robust_calculation: If True, uses 75th percentile instead of mean to avoid
+                                   overestimation from terminal artifacts (blobs)
+            exclude_terminal_percent: Percentage of terminal points to exclude from calculation
+                                     (default 10% to avoid terminal blob artifacts)
+        """
         print("\n=== Diameter Analysis ===")
         
         if self.branch_data is None:
             raise ValueError("Build graph first with build_graph()")
+        
+        if use_robust_calculation:
+            print(f"  Using ROBUST calculation (75th percentile, excluding {exclude_terminal_percent}% terminal points)")
         
         diameters_list = []
         
@@ -916,10 +926,31 @@ class AirwayGraphAnalyzer:
                     distances.append(dist * 2)  # diameter = 2 * radius
             
             if distances:
-                diameter_mean = np.mean(distances)
-                diameter_std = np.std(distances)
-                diameter_min = np.min(distances)
-                diameter_max = np.max(distances)
+                # ROBUST CALCULATION to avoid terminal artifact overestimation
+                if use_robust_calculation and len(distances) > 10:
+                    # Exclude terminal points (they may have blob artifacts)
+                    n_exclude = max(1, int(len(distances) * exclude_terminal_percent / 100))
+                    # Exclude first and last n_exclude points
+                    core_distances = distances[n_exclude:-n_exclude] if len(distances) > 2*n_exclude else distances
+                    
+                    if len(core_distances) > 0:
+                        # Use 75th percentile instead of mean (more robust to outliers)
+                        diameter_mean = np.percentile(core_distances, 75)
+                        diameter_std = np.std(core_distances)
+                        diameter_min = np.min(core_distances)
+                        diameter_max = np.percentile(core_distances, 95)  # 95th instead of max
+                    else:
+                        # Fallback if too short
+                        diameter_mean = np.percentile(distances, 75)
+                        diameter_std = np.std(distances)
+                        diameter_min = np.min(distances)
+                        diameter_max = np.percentile(distances, 95)
+                else:
+                    # Standard calculation (mean) for very short branches
+                    diameter_mean = np.mean(distances)
+                    diameter_std = np.std(distances)
+                    diameter_min = np.min(distances)
+                    diameter_max = np.max(distances)
             else:
                 diameter_mean = diameter_std = diameter_min = diameter_max = 0
             

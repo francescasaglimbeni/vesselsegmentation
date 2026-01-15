@@ -108,14 +108,14 @@ class CompleteAirwayPipeline:
                 verbose=True
             )
 
-            # PARAMETRI ANTI-BLOB - DISABILITATO PER DEBUG ASIMMETRIA
-            # Il problema è che un polmone intero viene visto come "blob isolato" e rimosso
+            # PARAMETRI ANTI-BLOB - CONSERVATIVI per rimuovere solo artefatti chiari
+            # Parametri rilassati per preservare rami periferici veri mantenendo qualità
             refined_np = ARM.refine(
-                enable_anti_blob=False,             # ✗ DISABILITATO per preservare tutte le componenti
-                min_blob_size_voxels=20,           
-                min_blob_size_mm3=5,               
-                max_blob_distance_mm=30.0,         
-                enable_tubular_smoothing=False,    
+                enable_anti_blob=True,              # ✓ RIABILITATO con parametri conservativi
+                min_blob_size_voxels=10,            # Ridotto: rimuove solo blob molto piccoli
+                min_blob_size_mm3=3,                # Ridotto: preserva anche piccoli rami distali
+                max_blob_distance_mm=20.0,          # Ridotto da 30: più conservativo
+                enable_tubular_smoothing=False,     # Mantieni disabilitato per preservare forma
                 enable_skeleton_reconstruction=False
             )
 
@@ -137,8 +137,8 @@ class CompleteAirwayPipeline:
                 mhd_path=mhd_path,
                 airway_mask_path=airway_path,
                 output_dir=step1_dir,
-                max_hole_size_mm3=200,              # Aumentato da 100 a 200 per riempire gap più grandi
-                max_bridge_distance_mm=15.0         # Aumentato da 10 a 15 per connettere rami più distanti
+                max_hole_size_mm3=100,              # Ridotto da 200: più conservativo per evitare pallini
+                max_bridge_distance_mm=10.0         # Ridotto da 15: evita connessioni spurie
             )
 
             airway_path = gap_filled_path
@@ -593,7 +593,7 @@ def main():
     # CONFIGURATION
     # ============================================================
     
-    INPUT_PATH = r"X:/Francesca Saglimbeni/tesi/vesselsegmentation/OSIC/OSIC_final"
+    INPUT_PATH = r"X:\Francesca Saglimbeni\tesi\datasets\OSIC_touse"
     OUTPUT_DIR = "output_results_with_fibrosis"
     BATCH_MODE = True
     FAST_SEGMENTATION = False
