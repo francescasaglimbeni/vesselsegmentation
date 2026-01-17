@@ -85,7 +85,7 @@ class CompleteAirwayPipeline:
             print("STEP 1: AIRWAY SEGMENTATION (TotalSegmentator + Enhanced Refinement)")
             print("="*80)
 
-            airway_path = segment_airwayfull_from_mhd(
+            airway_original_path = segment_airwayfull_from_mhd(
                 mhd_path, 
                 step1_dir, 
                 fast=fast_segmentation
@@ -93,11 +93,12 @@ class CompleteAirwayPipeline:
 
             # ENHANCED REFINEMENT
             print("\n--- Applying Enhanced Refinement ---")
+            print("Strategy: Refined mask for connectivity/skeleton, original for metrics")
 
             ct_img = sitk.ReadImage(mhd_path)
             ct_np = sitk.GetArrayFromImage(ct_img)
 
-            airway_img = sitk.ReadImage(airway_path)
+            airway_img = sitk.ReadImage(airway_original_path)
             airway_np = sitk.GetArrayFromImage(airway_img)
             mask_np = (airway_np > 0).astype(np.uint8)
 
@@ -122,53 +123,92 @@ class CompleteAirwayPipeline:
             refined_path = os.path.join(step1_dir, f"{scan_name}_airway_refined_enhanced.nii.gz")
             ARM.save(refined_path, airway_img)
 
-            airway_path = refined_path
-            results['airway_segmentation'] = airway_path
-            print(f"\n✓ Enhanced segmentation complete: {airway_path}")
+            # CRITICAL: Keep BOTH masks for dual strategy
+            airway_refined_path = refined_path  # For connectivity/skeleton
+            # airway_original_path already defined   # For clinical metrics
+            
+            results['airway_segmentation_original'] = airway_original_path
+            results['airway_segmentation_refined'] = airway_refined_path
+            print(f"\n✓ Original mask (for metrics): {airway_original_path}")
+            print(f"✓ Refined mask (for connectivity): {airway_refined_path}")
             
             # ============================================================
-            # STEP 1.5: GAP FILLING
+            # STEP 1.5: GAP FILLING (on refined mask for connectivity)
             # ============================================================
             print("\n" + "="*80)
-            print("STEP 1.5: INTELLIGENT GAP FILLING")
+            print("STEP 1.5: INTELLIGENT GAP FILLING (on refined mask)")
             print("="*80)
 
-            gap_filled_path, gap_filler = integrate_gap_filling_into_pipeline(
+            gap_filled_refined_path, gap_filler = integrate_gap_filling_into_pipeline(
                 mhd_path=mhd_path,
-                airway_mask_path=airway_path,
+                airway_mask_path=airway_refined_path,
                 output_dir=step1_dir,
                 max_hole_size_mm3=100,              # Ridotto da 200: più conservativo per evitare pallini
                 max_bridge_distance_mm=10.0         # Ridotto da 15: evita connessioni spurie
             )
 
-            airway_path = gap_filled_path
-            results['airway_gap_filled'] = gap_filled_path
+            # Also apply same gap filling to original mask (minimal changes)
+            gap_filled_original_path, _ = integrate_gap_filling_into_pipeline(
+                mhd_path=mhd_path,
+                airway_mask_path=airway_original_path,
+                output_dir=step1_dir,
+                max_hole_size_mm3=100,
+                max_bridge_distance_mm=10.0
+            )
+            
+            # Update paths: refined for skeleton, original for metrics
+            airway_refined_path = gap_filled_refined_path
+            airway_original_path = gap_filled_original_path
+            results['airway_gap_filled_refined'] = gap_filled_refined_path
+            results['airway_gap_filled_original'] = gap_filled_original_path
 
             # ============================================================
-            # STEP 2: ENHANCED TRACHEA REMOVAL
+            # STEP 2: ENHANCED TRACHEA REMOVAL (on both masks)
             # ============================================================
             print("\n" + "="*80)
             print("STEP 2: ENHANCED TRACHEA REMOVAL")
             print("="*80)
             print("Using ultra-conservative trachea identification method")
+            print("Applying to both refined (skeleton) and original (metrics) masks")
 
             from test_robust import integrate_with_pipeline
 
-            bronchi_mask, carina_coords, confidence, detector = integrate_with_pipeline(
-                airway_path,
+            # Remove trachea from REFINED mask (for skeleton/connectivity)
+            bronchi_mask_refined, carina_coords, confidence, detector = integrate_with_pipeline(
+                airway_refined_path,
                 spacing=None,
                 save_output=True,
                 output_dir=step2_dir  
             )
 
             bronchi_original_path = os.path.join(step2_dir, "bronchi_enhanced_conservative.nii.gz")
-            bronchi_filename = f"{scan_name}_bronchi_enhanced.nii.gz"
-            bronchi_path = os.path.join(step2_dir, bronchi_filename)
+            bronchi_refined_filename = f"{scan_name}_bronchi_enhanced_refined.nii.gz"
+            bronchi_refined_path = os.path.join(step2_dir, bronchi_refined_filename)
             
             if os.path.exists(bronchi_original_path):
-                if os.path.exists(bronchi_path):
-                    os.remove(bronchi_path)
-                os.rename(bronchi_original_path, bronchi_path)
+                if os.path.exists(bronchi_refined_path):
+                    os.remove(bronchi_refined_path)
+                os.rename(bronchi_original_path, bronchi_refined_path)
+            
+            # Remove trachea from ORIGINAL mask (for metrics) using same cut point
+            bronchi_mask_original, _, _, _ = integrate_with_pipeline(
+                airway_original_path,
+                spacing=None,
+                save_output=False,  # Don't save duplicate visualizations
+                output_dir=step2_dir  
+            )
+            
+            bronchi_original_filename = f"{scan_name}_bronchi_enhanced_original.nii.gz"
+            bronchi_original_path = os.path.join(step2_dir, bronchi_original_filename)
+            
+            # Save original bronchi mask
+            ref_img = sitk.ReadImage(airway_original_path)
+            bronchi_original_img = sitk.GetImageFromArray(bronchi_mask_original)
+            bronchi_original_img.CopyInformation(ref_img)
+            sitk.WriteImage(bronchi_original_img, bronchi_original_path)
+            
+            # Update paths
+            bronchi_path = bronchi_refined_path  # For backward compatibility
 
             carina_z, carina_y, carina_x = carina_coords
             
@@ -182,6 +222,8 @@ class CompleteAirwayPipeline:
                 'trachea_length_mm': detector.trachea_length * detector.spacing[2] if detector.trachea_length else None
             }
             results['carina_coordinates'] = {'z': carina_z, 'y': carina_y, 'x': carina_x}
+            results['bronchi_refined_path'] = bronchi_refined_path
+            results['bronchi_original_path'] = bronchi_original_path
             
             # ============================================================
             # STEP 3: PREPROCESSING WITH COMPONENT RECONNECTION
@@ -189,10 +231,12 @@ class CompleteAirwayPipeline:
             print("\n" + "="*80)
             print("STEP 3: PREPROCESSING & COMPONENT RECONNECTION")
             print("="*80)
+            print("Processing refined mask for skeleton topology...")
             
-            preprocessor = SegmentationPreprocessor(bronchi_path)
+            # Preprocess REFINED mask (for skeleton)
+            preprocessor_refined = SegmentationPreprocessor(bronchi_refined_path)
             
-            cleaned_mask, cleaned_path = preprocessor.run_full_preprocessing(
+            cleaned_mask_refined, cleaned_path_refined = preprocessor_refined.run_full_preprocessing(
                 output_dir=step3_dir,
                 try_reconnection=True,
                 max_reconnect_distance_mm=15.0,
@@ -200,10 +244,27 @@ class CompleteAirwayPipeline:
                 visualize=True
             )
             
-            results['cleaned_mask'] = cleaned_path
+            # Also preprocess ORIGINAL mask (for metrics) - MINIMAL cleaning
+            print("\nProcessing original mask for accurate metrics...")
+            print("CRITICAL: Using MINIMAL preprocessing to preserve peripheral airways")
+            preprocessor_original = SegmentationPreprocessor(bronchi_original_path)
+            
+            # MINIMAL preprocessing: only keep main component, NO aggressive removal
+            cleaned_mask_original, cleaned_path_original = preprocessor_original.run_full_preprocessing(
+                output_dir=step3_dir,
+                try_reconnection=False,  # NO reconnection - preserve as-is
+                max_reconnect_distance_mm=0.0,  # Disabled
+                min_component_size=5,  # Very low threshold - keep almost everything
+                visualize=False  # No duplicate visualizations
+            )
+            print("✓ Original mask preserved with minimal changes (for accurate diameter/volume)")
+            
+            results['cleaned_mask_refined'] = cleaned_path_refined
+            results['cleaned_mask_original'] = cleaned_path_original
+            results['cleaned_mask'] = cleaned_path_refined  # For backward compatibility
             
             cleaned_skeleton_path, _ = integrate_skeleton_cleaning(
-                cleaned_path, 
+                cleaned_path_refined,  # Use refined for skeleton
                 step4_dir,
                 min_component_size=20,
                 max_isolation_distance_mm=15.0,
@@ -211,13 +272,15 @@ class CompleteAirwayPipeline:
             )
             
             # ============================================================
-            # STEP 4: COMPLETE BRONCHIAL TREE ANALYSIS
+            # STEP 4: COMPLETE BRONCHIAL TREE ANALYSIS (DUAL-MASK STRATEGY)
             # ============================================================
             print("\n" + "="*80)
             print("STEP 4: BRONCHIAL TREE ANALYSIS WITH WEIBEL MODEL")
             print("="*80)
+            print("Dual-mask strategy: refined for skeleton, original for metrics")
             
-            analyzer = AirwayGraphAnalyzer(cleaned_path)
+            # Create analyzer with refined mask (for skeleton topology)
+            analyzer = AirwayGraphAnalyzer(cleaned_path_refined)
             
             # CRITICAL: Use larger reconnect distance to ensure BOTH lungs are connected
             # With fibrosis, bronchi may be separated by >15mm in skeleton space
@@ -226,7 +289,8 @@ class CompleteAirwayPipeline:
                 visualize=True,
                 max_reconnect_distance_mm=50.0,  # Increased from 15mm to connect both lungs
                 min_voxels_for_reconnect=10,     # Increased to avoid reconnecting tiny noise
-                max_voxels_for_keep=200          # Increased to preserve significant isolated regions
+                max_voxels_for_keep=200,         # Increased to preserve significant isolated regions
+                original_mask_path=cleaned_path_original  # NEW: original mask for accurate metrics
             )
             
             results['analysis_results'] = analysis_results
@@ -358,11 +422,14 @@ class CompleteAirwayPipeline:
             f.write("PIPELINE STEPS\n")
             f.write("="*80 + "\n\n")
             
-            f.write("1. ✓ Segmentation (TotalSegmentator + Enhanced Refinement)\n")
-            f.write(f"   Output: {results.get('airway_segmentation', 'N/A')}\n\n")
+            f.write("1. ✓ Segmentation (TotalSegmentator)\n")
+            f.write(f"   Original (for metrics): {results.get('airway_segmentation_original', 'N/A')}\n")
+            f.write(f"   Refined (for connectivity): {results.get('airway_segmentation_refined', 'N/A')}\n")
+            f.write(f"   Strategy: Dual-mask approach for accurate clinical metrics\n\n")
             
             f.write("2. ✓ Gap Filling\n")
-            f.write(f"   Output: {results.get('airway_gap_filled', 'N/A')}\n\n")
+            f.write(f"   Refined: {results.get('airway_gap_filled_refined', 'N/A')}\n")
+            f.write(f"   Original: {results.get('airway_gap_filled_original', 'N/A')}\n\n")
             
             f.write("3. ✓ Enhanced Trachea Removal\n")
             f.write(f"   Method: Ultra-conservative with pre-cut\n")
@@ -381,9 +448,12 @@ class CompleteAirwayPipeline:
             f.write("\n")
             
             f.write("4. ✓ Preprocessing & Component Reconnection\n")
-            f.write(f"   Output: {results.get('cleaned_mask', 'N/A')}\n\n")
+            f.write(f"   Refined (skeleton): {results.get('cleaned_mask_refined', 'N/A')}\n")
+            f.write(f"   Original (metrics): {results.get('cleaned_mask_original', 'N/A')}\n\n")
             
-            f.write("5. ✓ Bronchial Tree Analysis\n")
+            f.write("5. ✓ Bronchial Tree Analysis (Dual-Mask Strategy)\n")
+            f.write(f"   Skeleton from refined mask (better connectivity)\n")
+            f.write(f"   Diameters/volumes from original mask (accurate metrics)\n")
             f.write(f"   Output: {os.path.join(output_dir, 'step4_analysis')}\n\n")
             
             f.write("6. ✓ Advanced Clinical Metrics\n\n")
@@ -593,7 +663,7 @@ def main():
     # CONFIGURATION
     # ============================================================
     
-    INPUT_PATH = r"X:\Francesca Saglimbeni\tesi\datasets\dataset_OSIC_final"
+    INPUT_PATH = r"X:\Francesca Saglimbeni\tesi\datasets\OSIC_correct"
     OUTPUT_DIR = "output_results_with_fibrosis"
     BATCH_MODE = True
     FAST_SEGMENTATION = False

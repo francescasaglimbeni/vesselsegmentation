@@ -252,6 +252,19 @@ def load_pipeline_metrics(case_dir):
     else:
         result['max_generation'] = np.nan
     
+    # Load fibrosis score if available
+    fibrosis_path = case_dir / "step6_fibrosis_assessment" / "fibrosis_assessment.json"
+    if fibrosis_path.exists():
+        with open(fibrosis_path, 'r') as f:
+            fibrosis = json.load(f)
+            result['fibrosis_score'] = fibrosis.get('overall', {}).get('fibrosis_score', np.nan)
+            result['fibrosis_stage'] = fibrosis.get('overall', {}).get('stage', 'unknown')
+            result['fibrosis_confidence'] = fibrosis.get('overall', {}).get('confidence', np.nan)
+    else:
+        result['fibrosis_score'] = np.nan
+        result['fibrosis_stage'] = 'unknown'
+        result['fibrosis_confidence'] = np.nan
+    
     return result
 
 
@@ -362,7 +375,7 @@ def compute_correlations(merged_df):
         return None
     
     correlations = {}
-    metrics = ['pc_ratio', 'tortuosity', 'branch_count', 'airway_volume_ml', 'max_generation']
+    metrics = ['pc_ratio', 'tortuosity', 'branch_count', 'airway_volume_ml', 'max_generation', 'fibrosis_score']
     
     for metric in metrics:
         valid_metric_df = valid_df[valid_df[metric].notna()]
@@ -412,7 +425,7 @@ def interpret_correlation(r, p, metric_name):
     
     # Expected correlations (clinical hypothesis)
     expected_positive = ['pc_ratio', 'branch_count', 'airway_volume_ml', 'max_generation']
-    expected_negative = ['tortuosity']
+    expected_negative = ['tortuosity', 'fibrosis_score']
     
     abs_r = abs(r)
     
@@ -467,10 +480,11 @@ def plot_correlations(merged_df, output_dir):
         ('pc_ratio', 'PC Ratio (Peripheral/Central)', 'Expected: Positive correlation'),
         ('tortuosity', 'Mean Tortuosity', 'Expected: Negative correlation'),
         ('branch_count', 'Branch Count', 'Expected: Positive correlation'),
-        ('airway_volume_ml', 'Airway Volume (ml)', 'Expected: Positive correlation')
+        ('airway_volume_ml', 'Airway Volume (ml)', 'Expected: Positive correlation'),
+        ('fibrosis_score', 'Fibrosis Score', 'Expected: Negative correlation')
     ]
     
-    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
     axes = axes.flatten()
     
     for idx, (metric, label, expected) in enumerate(metrics):
@@ -535,9 +549,9 @@ def plot_severity_distributions(merged_df, output_dir):
         print("⚠ Skipping severity distribution plots: insufficient data")
         return
     
-    metrics = ['pc_ratio', 'tortuosity', 'branch_count', 'airway_volume_ml']
+    metrics = ['pc_ratio', 'tortuosity', 'branch_count', 'airway_volume_ml', 'fibrosis_score']
     
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     axes = axes.flatten()
     
     for idx, metric in enumerate(metrics):
@@ -587,7 +601,7 @@ def generate_validation_report(merged_df, correlations, coherence_df, output_dir
     output_dir = Path(output_dir)
     report_path = output_dir / "FVC_VALIDATION_REPORT.txt"
     
-    with open(report_path, 'w') as f:
+    with open(report_path, 'w', encoding='utf-8') as f:
         f.write("="*80 + "\n")
         f.write("FVC-BASED VALIDATION REPORT\n")
         f.write("Validation of Airway Pipeline Fibrosis Metrics using FVC as Ground Truth\n")
@@ -827,10 +841,10 @@ def main():
     """Main entry point for FVC validation"""
     
     # Configuration paths
-    PIPELINE_OUTPUT = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\output_results_with_fibrosis")
+    PIPELINE_OUTPUT = Path(r"X:\Francesca Saglimbeni\tesi\results\results_OSIC (correct)")
     TRAIN_CSV = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\train.csv")
     TEST_CSV = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\test.csv")
-    OUTPUT_DIR = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\fvc_validation_results")
+    OUTPUT_DIR = Path(r"X:\Francesca Saglimbeni\tesi\results\fvc_validation_results")
     
     print(f"\n{'='*80}")
     print(f"FVC VALIDATION TOOL")

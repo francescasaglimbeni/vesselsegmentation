@@ -26,15 +26,20 @@ class AirwayGraphAnalyzer:
     - Analyzes and manages connected components of the skeleton
     """
     
-    def __init__(self, airway_mask_path, spacing=None, carina_coords=None):
+    def __init__(self, airway_mask_path, spacing=None, carina_coords=None, original_mask_path=None):
         """
         Args:
             airway_mask_path: Path to .nii.gz airway mask file (bronchi only, no trachea)
+                             Used for skeleton/topology
             spacing: Tuple (x,y,z) of spacing in mm. If None, reads from image
+            carina_coords: Optional initial carina coordinates
+            original_mask_path: Optional path to original mask for accurate diameter/volume metrics
+                               (dual-mask strategy: refined for skeleton, original for metrics)
         """
         self.mask_path = airway_mask_path
+        self.original_mask_path = original_mask_path
         
-        # Read image
+        # Read image (refined mask for skeleton/topology)
         print(f"Loading mask from: {airway_mask_path}")
         self.sitk_image = sitk.ReadImage(airway_mask_path)
         self.mask = sitk.GetArrayFromImage(self.sitk_image)
@@ -44,6 +49,16 @@ class AirwayGraphAnalyzer:
         print(f"Spacing (x,y,z): {self.spacing} mm")
         print(f"Shape (z,y,x): {self.mask.shape}")
         print(f"Positive voxels: {np.sum(self.mask > 0)}")
+        
+        # Load original mask if provided (for accurate metrics)
+        self.original_mask = None
+        self.original_distance_transform = None
+        if original_mask_path:
+            print(f"\nLoading ORIGINAL mask for accurate metrics: {original_mask_path}")
+            original_sitk = sitk.ReadImage(original_mask_path)
+            self.original_mask = sitk.GetArrayFromImage(original_sitk)
+            print(f"Original mask positive voxels: {np.sum(self.original_mask > 0)}")
+            print("DUAL-MASK STRATEGY: Skeleton from refined, metrics from original")
         
         # Results
         self.skeleton = None
@@ -79,6 +94,16 @@ class AirwayGraphAnalyzer:
         # Compute distance transform for diameters
         print("Computing distance transform for diameters...")
         self.distance_transform = distance_transform_edt(binary_mask, sampling=self.spacing)
+        
+        # DUAL-MASK STRATEGY: Compute distance transform on ORIGINAL mask if provided
+        if self.original_mask is not None:
+            print("Computing distance transform on ORIGINAL mask for accurate diameters...")
+            original_binary = (self.original_mask > 0).astype(np.uint8)
+            self.original_distance_transform = distance_transform_edt(original_binary, sampling=self.spacing)
+            print("✓ DUAL-MASK: Skeleton from refined, diameters from original")
+        else:
+            # Fallback: use same distance transform
+            self.original_distance_transform = self.distance_transform
         
         return self.skeleton
 
@@ -904,6 +929,11 @@ class AirwayGraphAnalyzer:
         if self.branch_data is None:
             raise ValueError("Build graph first with build_graph()")
         
+        # DUAL-MASK STRATEGY: Use original distance transform for accurate metrics
+        distance_transform_for_metrics = self.original_distance_transform
+        if distance_transform_for_metrics is not None and distance_transform_for_metrics is not self.distance_transform:
+            print("  Using ORIGINAL mask distance transform for accurate diameter measurements")
+        
         if use_robust_calculation:
             print(f"  Using ROBUST calculation (75th percentile, excluding {exclude_terminal_percent}% terminal points)")
         
@@ -916,13 +946,14 @@ class AirwayGraphAnalyzer:
             coords_indices = self.skeleton_obj.path_coordinates(branch_idx)
             
             # Extract distance transform values along the branch
+            # DUAL-MASK: Use original distance transform for accurate measurements
             distances = []
             for coord in coords_indices:
                 z, y, x = coord
-                if 0 <= z < self.distance_transform.shape[0] and \
-                   0 <= y < self.distance_transform.shape[1] and \
-                   0 <= x < self.distance_transform.shape[2]:
-                    dist = self.distance_transform[z, y, x]
+                if 0 <= z < distance_transform_for_metrics.shape[0] and \
+                   0 <= y < distance_transform_for_metrics.shape[1] and \
+                   0 <= x < distance_transform_for_metrics.shape[2]:
+                    dist = distance_transform_for_metrics[z, y, x]
                     distances.append(dist * 2)  # diameter = 2 * radius
             
             if distances:
@@ -1154,26 +1185,30 @@ class AirwayGraphAnalyzer:
         # ================================================================
         print("\n[Metric 2] Peripheral vs Central Airway Analysis...")
         
-        # Definizione:
-        # - Central: generazioni 0-10 (trachea + bronchi principali/lobari)
-        # - Intermediate: generazioni 11-15 (bronchi segmentali)
-        # - Peripheral: generazioni >15 (bronchioli)
+        # Definizione CORRETTA per pazienti con fibrosi:
+        # - Central: generazioni 0-7 (trachea + bronchi principali/lobari)
+        # - Intermediate: generazioni 8-10 (bronchi segmentali)
+        # - Peripheral: generazioni >10 (subsegmentali + bronchioli)
+        # NOTA: Threshold abbassato da >15 a >10 per includere più periferia
+        #       Nei pazienti con fibrosi, la periferia può essere molto ridotta
         
-        central_branches = self.branch_metrics_df[self.branch_metrics_df['generation'] <= 10]
+        central_branches = self.branch_metrics_df[self.branch_metrics_df['generation'] <= 7]
         intermediate_branches = self.branch_metrics_df[
-            (self.branch_metrics_df['generation'] > 10) & 
-            (self.branch_metrics_df['generation'] <= 15)
+            (self.branch_metrics_df['generation'] > 7) & 
+            (self.branch_metrics_df['generation'] <= 10)
         ]
-        peripheral_branches = self.branch_metrics_df[self.branch_metrics_df['generation'] > 15]
+        peripheral_branches = self.branch_metrics_df[self.branch_metrics_df['generation'] > 10]
         
         central_volume = central_branches['volume_mm3'].sum()
         intermediate_volume = intermediate_branches['volume_mm3'].sum()
         peripheral_volume = peripheral_branches['volume_mm3'].sum()
         
-        # Ratio chiave: peripheral/central
-        # Valori attesi:
-        # - Polmone sano: 0.3-0.6 (periferia ha meno volume ma più rami)
-        # - Fibrosi avanzata: <0.2 (perdita preferenziale vie periferiche)
+        # Ratio chiave: peripheral/central (con nuovo threshold >10)
+        # Valori attesi (AGGIORNATI con gen >10):
+        # - Polmone sano: 0.5-1.5 (più periferia inclusa ora)
+        # - Fibrosi lieve: 0.3-0.5
+        # - Fibrosi moderata: 0.15-0.3
+        # - Fibrosi severa: <0.15 (perdita preferenziale vie periferiche)
         p_c_ratio = peripheral_volume / central_volume if central_volume > 0 else 0
         
         metrics['central_volume_mm3'] = central_volume
@@ -1189,23 +1224,29 @@ class AirwayGraphAnalyzer:
             len(peripheral_branches) / len(central_branches) if len(central_branches) > 0 else 0
         )
         
-        print(f"  Central airways (gen 0-10):")
+        print(f"  Central airways (gen 0-7):")
         print(f"    Volume: {central_volume:.2f} mm³")
         print(f"    Branches: {len(central_branches)}")
-        print(f"  Intermediate airways (gen 11-15):")
+        print(f"  Intermediate airways (gen 8-10):")
         print(f"    Volume: {intermediate_volume:.2f} mm³")
         print(f"    Branches: {len(intermediate_branches)}")
-        print(f"  Peripheral airways (gen >15):")
+        print(f"  Peripheral airways (gen >10):")
         print(f"    Volume: {peripheral_volume:.2f} mm³")
         print(f"    Branches: {len(peripheral_branches)}")
         print(f"  Peripheral/Central volume ratio: {p_c_ratio:.3f}")
         print(f"  Peripheral/Central branch ratio: {metrics['peripheral_to_central_branch_ratio']:.3f}")
         
-        # Interpretazione
-        if p_c_ratio < 0.2:
-            print(f"  ⚠ Low P/C ratio suggests peripheral airway loss (fibrosis marker)")
-        elif p_c_ratio > 0.6:
-            print(f"  ✓ High P/C ratio suggests well-preserved peripheral airways")
+        # Interpretazione (AGGIORNATA con nuovi threshold)
+        if p_c_ratio < 0.15:
+            print(f"  ⚠ VERY LOW P/C ratio - severe peripheral airway loss (fibrosis)")
+        elif p_c_ratio < 0.3:
+            print(f"  ⚠ LOW P/C ratio - moderate peripheral airway loss")
+        elif p_c_ratio < 0.5:
+            print(f"  → Borderline - mild peripheral involvement")
+        elif p_c_ratio > 1.0:
+            print(f"  ✓ EXCELLENT P/C ratio - well-preserved peripheral airways")
+        else:
+            print(f"  ✓ Normal P/C ratio range")
         
         # ================================================================
         # METRIC 3: Airway Tortuosity
@@ -1303,26 +1344,22 @@ class AirwayGraphAnalyzer:
                 # Usa coordinate per distinguere left/right
                 neighbor_positions = [self.graph.nodes[n]['pos'] for n in carina_neighbors]
                 
-                # FIXED: Use Z coordinate (pos[0]) for left/right, not X (pos[2])
+                # FIXED: Use Z coordinate (pos[0]) for left/right
                 # pos format is (z, y, x) where Z distinguishes left/right anatomically
-                # IMPORTANT: Use median of ALL nodes, not carina position, as the dividing line
-                # because carina is not necessarily at the anatomical center
+                # Strategy: Split based on Z-coordinate of carina neighbors
                 
-                # Calculate median Z across all graph nodes
-                all_z_coords = [self.graph.nodes[n]['pos'][0] for n in self.graph.nodes()]
-                median_z = np.median(all_z_coords)
-                
+                # Get Z coordinates of immediate children from carina
                 z_coords = [pos[0] for pos in neighbor_positions]
                 
                 if len(set(z_coords)) > 1:  # Diversi valori Z
-                    left_side_nodes = []
-                    right_side_nodes = []
+                    # Sort neighbors by Z coordinate
+                    sorted_neighbors = sorted(zip(carina_neighbors, neighbor_positions), 
+                                            key=lambda x: x[1][0])
                     
-                    for node, pos in zip(carina_neighbors, neighbor_positions):
-                        if pos[0] < median_z:
-                            left_side_nodes.append(node)
-                        else:
-                            right_side_nodes.append(node)
+                    # Split in two groups: first half = left, second half = right
+                    mid_point = len(sorted_neighbors) // 2
+                    left_side_nodes = [n[0] for n in sorted_neighbors[:mid_point]]
+                    right_side_nodes = [n[0] for n in sorted_neighbors[mid_point:]]
                     
                     # Conta descendants per ogni lato
                     from collections import deque
@@ -1355,8 +1392,21 @@ class AirwayGraphAnalyzer:
                     print(f"  Right side branches: {right_count}")
                     print(f"  Symmetry index: {symmetry_index:.3f}")
                     
-                    if symmetry_index < 0.7:
-                        print(f"  ⚠ Asymmetric branching suggests unilateral disease")
+                    # Detailed interpretation
+                    if symmetry_index < 0.5:
+                        print(f"  ⚠ SEVERE asymmetry - strong unilateral disease")
+                    elif symmetry_index < 0.7:
+                        print(f"  ⚠ Moderate asymmetry - possible unilateral predominance")
+                    elif symmetry_index < 0.85:
+                        print(f"  → Mild asymmetry - within acceptable range")
+                    else:
+                        print(f"  ✓ Good symmetry")
+                    
+                    # Identify which side is more affected
+                    if left_count < right_count * 0.7:
+                        print(f"  → Left lung more affected ({left_count} vs {right_count} branches)")
+                    elif right_count < left_count * 0.7:
+                        print(f"  → Right lung more affected ({right_count} vs {left_count} branches)")
                 else:
                     metrics['symmetry_index'] = np.nan
                     print("  Could not distinguish left/right (coordinates issue)")
@@ -2716,14 +2766,33 @@ class AirwayGraphAnalyzer:
     def run_full_analysis(self, output_dir, visualize=True, 
                          max_reconnect_distance_mm=15.0, 
                          min_voxels_for_reconnect=5,
-                         max_voxels_for_keep=100):
+                         max_voxels_for_keep=100,
+                         original_mask_path=None):
         """
         Runs complete analysis pipeline with Weibel generation analysis
+        
+        Args:
+            output_dir: Directory for saving results
+            visualize: Whether to generate visualizations
+            max_reconnect_distance_mm: Max distance for reconnecting components
+            min_voxels_for_reconnect: Min voxels needed to attempt reconnection
+            max_voxels_for_keep: Max voxels to keep isolated component
+            original_mask_path: Optional path to original mask for accurate metrics
+                               (dual-mask strategy: refined for skeleton, original for metrics)
         """
         print("\n" + "="*60)
         print("COMPLETE BRONCHIAL TREE ANALYSIS PIPELINE")
         print("WITH WEIBEL GENERATION ANALYSIS")
+        if original_mask_path:
+            print("DUAL-MASK STRATEGY: Refined for skeleton, Original for metrics")
         print("="*60)
+        
+        # Load original mask if provided (for accurate metrics)
+        if original_mask_path and self.original_mask is None:
+            print(f"\nLoading ORIGINAL mask for accurate metrics: {original_mask_path}")
+            original_sitk = sitk.ReadImage(original_mask_path)
+            self.original_mask = sitk.GetArrayFromImage(original_sitk)
+            print(f"Original mask positive voxels: {np.sum(self.original_mask > 0)}")
         
         # 1. Skeleton
         self.compute_skeleton()
@@ -2754,7 +2823,13 @@ class AirwayGraphAnalyzer:
         # 7. Calculate lengths
         self.calculate_branch_lengths()
         
-        # 8. Calculate diameters
+        # 7.5. Ensure original distance transform is computed (if dual-mask)
+        if self.original_mask is not None and self.original_distance_transform is None:
+            print("\nComputing distance transform on ORIGINAL mask for accurate diameter metrics...")
+            original_binary = (self.original_mask > 0).astype(np.uint8)
+            self.original_distance_transform = distance_transform_edt(original_binary, sampling=self.spacing)
+        
+        # 8. Calculate diameters (using original distance transform if available)
         self.analyze_diameters()
         
         # 9. Merge metrics
