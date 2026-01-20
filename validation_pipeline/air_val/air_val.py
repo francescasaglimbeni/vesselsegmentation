@@ -465,8 +465,6 @@ def validate_single_case(case_data, output_dir):
     print(f"Validating case: {Path(output_dir).name}")
     print(f"{'='*60}")
 
-    advanced_metrics = case_data.get('advanced_metrics', {})
-
     # ===== TECHNICAL VALIDATION (Pipeline Reliability) =====
     print("\n[TECHNICAL] Validating pipeline reliability...")
     try:
@@ -475,43 +473,6 @@ def validate_single_case(case_data, output_dir):
     except Exception as e:
         validation["technical"] = {"error": str(e)}
         print(f"  ✗ Technical validation failed: {e}")
-
-    # ===== CLINICAL VALIDATION (Literature Comparison) =====
-    # Step 1: Segmentation
-    print("\n[CLINICAL 1/4] Validating segmentation...")
-    try:
-        validation["segmentation"] = validate_segmentation(advanced_metrics)
-        print(f"  ✓ Segmentation validation completed")
-    except Exception as e:
-        validation["segmentation"] = {"error": str(e)}
-        print(f"  ✗ Segmentation validation failed: {e}")
-
-    # Step 2: Graph
-    print("\n[CLINICAL 2/4] Validating graph structure...")
-    try:
-        validation["graph"] = validate_graph(case_data)
-        print(f"  ✓ Graph validation completed")
-    except Exception as e:
-        validation["graph"] = {"error": str(e)}
-        print(f"  ✗ Graph validation failed: {e}")
-
-    # Step 3: Weibel
-    print("\n[CLINICAL 3/4] Validating Weibel generations and diameters...")
-    try:
-        validation["weibel"] = validate_weibel(case_data)
-        print(f"  ✓ Weibel validation completed")
-    except Exception as e:
-        validation["weibel"] = {"error": str(e)}
-        print(f"  ✗ Weibel validation failed: {e}")
-
-    # Step 4: Fibrosis
-    print("\n[CLINICAL 4/4] Validating fibrosis metrics...")
-    try:
-        validation["fibrosis"] = validate_fibrosis(advanced_metrics)
-        print(f"  ✓ Fibrosis validation completed")
-    except Exception as e:
-        validation["fibrosis"] = {"error": str(e)}
-        print(f"  ✗ Fibrosis validation failed: {e}")
 
     # ===== TECHNICAL RELIABILITY ASSESSMENT =====
     tech_flags = []
@@ -526,31 +487,12 @@ def validate_single_case(case_data, output_dir):
     
     pipeline_reliable = tech_fails == 0
     
-    # ===== CLINICAL COMPARISON (for reference, not for reliability) =====
-    clinical_flags = []
-    clinical_warnings = 0
-    clinical_fails = 0
-    
-    for block_name in ["segmentation", "graph", "weibel", "fibrosis"]:
-        if block_name in validation:
-            for metric_name, v in validation[block_name].items():
-                if isinstance(v, dict) and "status" in v:
-                    clinical_flags.append(v["status"])
-                    if v["status"] == "WARNING":
-                        clinical_warnings += 1
-                    elif v["status"] == "FAIL":
-                        clinical_fails += 1
-    
     validation["SUMMARY"] = {
         "PIPELINE_RELIABLE": pipeline_reliable,
         "technical_checks": len(tech_flags),
         "technical_passed": tech_flags.count("PASS"),
         "technical_failed": tech_fails,
-        "clinical_checks": len(clinical_flags),
-        "clinical_passed": clinical_flags.count("PASS"),
-        "clinical_warnings": clinical_warnings,
-        "clinical_failed": clinical_fails,
-        "note": "Clinical deviations expected in fibrotic patients. Technical reliability determines usability."
+        "note": "Only technical validation performed."
     }
 
     print(f"\n{'='*60}")
@@ -560,12 +502,6 @@ def validate_single_case(case_data, output_dir):
     print(f"  ✓ Passed: {tech_flags.count('PASS')}")
     print(f"  ✗ Failed: {tech_fails}")
     print(f"  → Pipeline reliable: {'YES' if pipeline_reliable else 'NO'}")
-    print(f"\n  === CLINICAL COMPARISON (vs Healthy Literature) ===")
-    print(f"  Total checks: {len(clinical_flags)}")
-    print(f"  ✓ Passed: {clinical_flags.count('PASS')}")
-    print(f"  ⚠ Warnings: {clinical_warnings}")
-    print(f"  ✗ Failed: {clinical_fails}")
-    print(f"  → Note: Deviations expected in fibrotic patients")
     print(f"{'='*60}\n")
 
     # Save validation report
@@ -628,11 +564,7 @@ def validate_pipeline_folder(output_root):
                 "status": "RELIABLE" if validation["SUMMARY"]["PIPELINE_RELIABLE"] else "UNRELIABLE",
                 "tech_checks": validation["SUMMARY"]["technical_checks"],
                 "tech_passed": validation["SUMMARY"]["technical_passed"],
-                "tech_failed": validation["SUMMARY"]["technical_failed"],
-                "clinical_checks": validation["SUMMARY"]["clinical_checks"],
-                "clinical_passed": validation["SUMMARY"]["clinical_passed"],
-                "clinical_warnings": validation["SUMMARY"]["clinical_warnings"],
-                "clinical_failed": validation["SUMMARY"]["clinical_failed"]
+                "tech_failed": validation["SUMMARY"]["technical_failed"]
             }
             
             # Add key technical metrics
@@ -683,7 +615,6 @@ def validate_pipeline_folder(output_root):
     print(f"  ⊗ Errors: {len(df[df['status'] == 'ERROR'])}")
     print(f"  - Skipped: {len(df[df['status'] == 'SKIPPED'])}")
     print(f"\nNote: Cases marked RELIABLE have no technical pipeline errors.")
-    print(f"      Clinical deviations are expected in fibrotic patients.")
     print(f"\nSummary saved to: {summary_csv}\n")
 
     return df
@@ -692,7 +623,7 @@ def main():
     """Entry point per la validazione batch della pipeline"""
     
     # Configurazione percorsi
-    DATA_ROOT = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\output_results_with_fibrosis")
+    DATA_ROOT = Path(r"X:\Francesca Saglimbeni\tesi\results\results_OSIC")
     OUTPUT_CSV = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\airway_pipeline_validation_summary.csv")
     
     print(f"\n{'='*80}")
@@ -731,8 +662,6 @@ def main():
             if len(reliable_cases) > 0:
                 print(f"\nQuality metrics for RELIABLE cases:")
                 print(f"  Average technical failures: {reliable_cases['tech_failed'].mean():.2f}")
-                print(f"  Average clinical deviations: {reliable_cases['clinical_failed'].mean():.2f}")
-                print(f"  Average clinical warnings: {reliable_cases['clinical_warnings'].mean():.2f}")
         
         print(f"\n{'='*80}\n")
         
