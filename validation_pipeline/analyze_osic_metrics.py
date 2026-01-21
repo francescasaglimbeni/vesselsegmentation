@@ -190,7 +190,6 @@ def plot_metric_vs_fvc(df, metric_name, metric_label, output_path):
     df_clean = df[[metric_name, 'FVC', 'week']].dropna()
     
     if len(df_clean) == 0:
-        print(f"  Skipping {metric_name}: no valid data")
         return None
     
     # Create figure
@@ -257,22 +256,13 @@ def create_all_plots(df):
         ('max_generation', 'Max Generation'),
         ('pc_ratio', 'Peripheral/Central Ratio'),
         ('tapering_ratio', 'Tapering Ratio'),
-        ('total_surface_area_mm2', 'Surface Area (mm²)'),
-        ('mean_diameter', 'Mean Diameter (mm)'),
-        ('median_diameter', 'Median Diameter (mm)'),
-        ('mean_length', 'Mean Branch Length (mm)'),
-        ('mean_tortuosity', 'Mean Tortuosity'),
-        ('peripheral_volume_ratio', 'Peripheral Volume Ratio'),
-        ('central_volume_ratio', 'Central Volume Ratio'),
-        ('trachea_diameter', 'Trachea Diameter (mm)'),
-        ('gen5_diameter', 'Generation 5 Diameter (mm)'),
+        ('mean_tortuosity', 'Mean Tortuosity')
     ]
     
     correlation_results = []
     
     for metric_name, metric_label in metrics:
         if metric_name not in df.columns:
-            print(f"  Skipping {metric_name}: not in dataset")
             continue
         
         output_path = OUTPUT_DIR / f"{metric_name}_vs_fvc.png"
@@ -280,7 +270,7 @@ def create_all_plots(df):
         
         if result is not None:
             correlation_results.append(result)
-            print(f"  ✓ Created {metric_name} plot (r={result['pearson_r']:.3f})")
+            print(f"  Created {metric_name} plot (r={result['pearson_r']:.3f})")
     
     return pd.DataFrame(correlation_results)
 
@@ -316,130 +306,7 @@ def plot_correlation_summary(corr_df, output_path):
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"\n✓ Correlation summary plot saved to: {output_path}")
-
-
-# ============================================================
-# TEMPORAL ANALYSIS
-# ============================================================
-
-def analyze_correlation_by_week(df, metric_name):
-    """Analyze how correlation changes with week"""
-    
-    df_clean = df[[metric_name, 'FVC', 'week', 'patient']].dropna()
-    
-    if len(df_clean) == 0:
-        return None
-    
-    # Define week bins
-    week_bins = [
-        (0, 10, 'Week 0-10'),
-        (10, 20, 'Week 10-20'),
-        (20, 30, 'Week 20-30'),
-        (30, 50, 'Week 30-50'),
-        (50, 100, 'Week >50')
-    ]
-    
-    results = []
-    
-    for min_week, max_week, label in week_bins:
-        subset = df_clean[(df_clean['week'] > min_week) & (df_clean['week'] <= max_week)]
-        
-        if len(subset) < 10:
-            continue
-        
-        try:
-            pearson_r, pearson_p = pearsonr(subset[metric_name], subset['FVC'])
-            spearman_r, spearman_p = spearmanr(subset[metric_name], subset['FVC'])
-            
-            results.append({
-                'metric': metric_name,
-                'week_range': label,
-                'min_week': min_week,
-                'max_week': max_week,
-                'n_samples': len(subset),
-                'n_patients': subset['patient'].nunique(),
-                'pearson_r': pearson_r,
-                'pearson_p': pearson_p,
-                'spearman_r': spearman_r,
-                'spearman_p': spearman_p,
-            })
-        except:
-            continue
-    
-    return pd.DataFrame(results) if results else None
-
-
-def plot_temporal_correlation(df, metric_name, metric_label, output_path):
-    """Plot how correlation changes over time"""
-    
-    temporal_df = analyze_correlation_by_week(df, metric_name)
-    
-    if temporal_df is None or len(temporal_df) == 0:
-        return None
-    
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-    
-    # Plot 1: Correlation over time
-    ax1 = axes[0, 0]
-    x_pos = np.arange(len(temporal_df))
-    ax1.plot(x_pos, temporal_df['pearson_r'], 'o-', linewidth=2, markersize=8, label='Pearson r', color='blue')
-    ax1.plot(x_pos, temporal_df['spearman_r'], 's-', linewidth=2, markersize=8, label='Spearman ρ', color='green')
-    ax1.axhline(y=0, color='black', linestyle='--', alpha=0.3)
-    ax1.set_xticks(x_pos)
-    ax1.set_xticklabels(temporal_df['week_range'], rotation=45, ha='right')
-    ax1.set_ylabel('Correlation Coefficient', fontsize=12)
-    ax1.set_title(f'Correlation Strength Over Time\n{metric_label} vs FVC', fontsize=13, fontweight='bold')
-    ax1.legend(loc='best')
-    ax1.grid(True, alpha=0.3)
-    
-    # Plot 2: Sample size
-    ax2 = axes[0, 1]
-    ax2.bar(x_pos, temporal_df['n_samples'], alpha=0.7, color='steelblue')
-    ax2.set_xticks(x_pos)
-    ax2.set_xticklabels(temporal_df['week_range'], rotation=45, ha='right')
-    ax2.set_ylabel('Number of Samples', fontsize=12)
-    ax2.set_title('Sample Size by Time Period', fontsize=13, fontweight='bold')
-    ax2.grid(True, alpha=0.3, axis='y')
-    
-    # Plot 3: Scatter colored by week bin
-    ax3 = axes[1, 0]
-    df_clean = df[[metric_name, 'FVC', 'week']].dropna()
-    df_clean['week_bin'] = pd.cut(df_clean['week'], 
-                                    bins=[0, 10, 20, 30, 50, 100],
-                                    labels=['0-10', '10-20', '20-30', '30-50', '>50'])
-    
-    colors = plt.cm.viridis(np.linspace(0, 1, len(df_clean['week_bin'].cat.categories)))
-    
-    for i, (bin_name, color) in enumerate(zip(df_clean['week_bin'].cat.categories, colors)):
-        subset = df_clean[df_clean['week_bin'] == bin_name]
-        if len(subset) > 0:
-            ax3.scatter(subset[metric_name], subset['FVC'], 
-                       label=f'Week {bin_name}', alpha=0.6, s=40, color=color, edgecolors='black', linewidth=0.5)
-    
-    ax3.set_xlabel(metric_label, fontsize=12)
-    ax3.set_ylabel('FVC (ml)', fontsize=12)
-    ax3.set_title('FVC vs Metric (colored by time period)', fontsize=13, fontweight='bold')
-    ax3.legend(loc='best', fontsize=9)
-    ax3.grid(True, alpha=0.3)
-    
-    # Plot 4: P-value significance
-    ax4 = axes[1, 1]
-    ax4.bar(x_pos, -np.log10(temporal_df['pearson_p']), alpha=0.7, color='coral')
-    ax4.axhline(y=-np.log10(0.05), color='red', linestyle='--', linewidth=2, label='p=0.05 threshold')
-    ax4.set_xticks(x_pos)
-    ax4.set_xticklabels(temporal_df['week_range'], rotation=45, ha='right')
-    ax4.set_ylabel('-log10(p-value)', fontsize=12)
-    ax4.set_title('Statistical Significance by Time Period', fontsize=13, fontweight='bold')
-    ax4.legend(loc='best')
-    ax4.grid(True, alpha=0.3, axis='y')
-    
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    return temporal_df
-
+    print(f"\nCorrelation summary plot saved to: {output_path}")
 
 def plot_fvc_evolution(df, metric_name, metric_label, output_path):
     """Plot FVC evolution stratified by baseline metric quartiles"""
@@ -720,299 +587,14 @@ def plot_fvc_evolution(df, metric_name, metric_label, output_path):
 # ============================================================
 # DETAILED WEEK-STRATIFIED PLOTS
 # ============================================================
-
-def plot_fvc_vs_metric_by_week(df, metric_name, metric_label, week_bins, output_dir):
-    """Create separate plots for each week bin showing FVC vs metric"""
-    
-    # Create figure with subplots for each week bin
-    n_bins = len(week_bins)
-    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-    axes = axes.flatten()
-    
-    for idx, (min_week, max_week, bin_label) in enumerate(week_bins):
-        ax = axes[idx]
-        
-        # Filter data for this week bin
-        subset = df[(df['week'] > min_week) & (df['week'] <= max_week)]
-        subset = subset[[metric_name, 'FVC', 'week']].dropna()
-        
-        if len(subset) < 5:
-            ax.text(0.5, 0.5, f'Insufficient data\n(n={len(subset)})', 
-                   ha='center', va='center', transform=ax.transAxes, fontsize=12)
-            ax.set_title(f'{bin_label}\nN = {len(subset)}', fontsize=11, fontweight='bold')
-            continue
-        
-        # Scatter plot
-        scatter = ax.scatter(subset[metric_name], subset['FVC'], 
-                           c=subset['week'], cmap='viridis', 
-                           alpha=0.6, s=80, edgecolors='black', linewidth=0.5)
-        
-        # Add colorbar
-        cbar = plt.colorbar(scatter, ax=ax)
-        cbar.set_label('Week', fontsize=9)
-        
-        # Add trend line
-        z = np.polyfit(subset[metric_name], subset['FVC'], 1)
-        p = np.poly1d(z)
-        x_trend = np.linspace(subset[metric_name].min(), subset[metric_name].max(), 100)
-        ax.plot(x_trend, p(x_trend), color='red', linestyle='--', linewidth=2, alpha=0.8)
-        
-        # Calculate correlation
-        r, p_val = pearsonr(subset[metric_name], subset['FVC'])
-        
-        # Format significance
-        if p_val < 0.001:
-            sig = '***'
-        elif p_val < 0.01:
-            sig = '**'
-        elif p_val < 0.05:
-            sig = '*'
-        else:
-            sig = 'n.s.'
-        
-        # Add correlation info
-        ax.text(0.05, 0.95, f'r = {r:.3f} {sig}\np = {p_val:.4f}\nn = {len(subset)}',
-               transform=ax.transAxes, fontsize=10, verticalalignment='top',
-               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-        
-        ax.set_xlabel(metric_label, fontsize=11)
-        ax.set_ylabel('FVC (ml)', fontsize=11)
-        ax.set_title(f'{bin_label}', fontsize=11, fontweight='bold')
-        ax.grid(True, alpha=0.3)
-    
-    # Remove extra subplot
-    fig.delaxes(axes[-1])
-    
-    # Main title
-    fig.suptitle(f'FVC vs {metric_label} - Temporal Evolution\n(Baseline metric from week 0 CT)', 
-                fontsize=14, fontweight='bold', y=0.995)
-    
-    plt.tight_layout(rect=[0, 0, 1, 0.99])
-    
-    # Save
-    output_path = output_dir / f'fvc_vs_{metric_name}_by_week.png'
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    return output_path
-
-
-def plot_metric_single_week_comparison(df, metric_name, metric_label, week_bins, output_dir, color='steelblue'):
-    """Create one figure with all week bins side by side for comparison"""
-    
-    fig, axes = plt.subplots(1, 5, figsize=(25, 5))
-    
-    for idx, (min_week, max_week, bin_label) in enumerate(week_bins):
-        ax = axes[idx]
-        
-        # Filter data
-        subset = df[(df['week'] > min_week) & (df['week'] <= max_week)]
-        subset = subset[[metric_name, 'FVC']].dropna()
-        
-        if len(subset) < 5:
-            ax.text(0.5, 0.5, f'N = {len(subset)}\n(insufficient)', 
-                   ha='center', va='center', transform=ax.transAxes, fontsize=11)
-            ax.set_title(bin_label, fontsize=10, fontweight='bold')
-            continue
-        
-        # Scatter
-        ax.scatter(subset[metric_name], subset['FVC'], 
-                  color=color, alpha=0.5, s=60, edgecolors='black', linewidth=0.5)
-        
-        # Trend line
-        z = np.polyfit(subset[metric_name], subset['FVC'], 1)
-        p = np.poly1d(z)
-        x_trend = np.linspace(subset[metric_name].min(), subset[metric_name].max(), 100)
-        ax.plot(x_trend, p(x_trend), 'r--', linewidth=2, alpha=0.8)
-        
-        # Correlation
-        r, p_val = pearsonr(subset[metric_name], subset['FVC'])
-        
-        # Significance
-        if p_val < 0.001:
-            sig = '***'
-            color_box = 'lightgreen'
-        elif p_val < 0.01:
-            sig = '**'
-            color_box = 'lightyellow'
-        elif p_val < 0.05:
-            sig = '*'
-            color_box = 'lightyellow'
-        else:
-            sig = 'n.s.'
-            color_box = 'lightcoral'
-        
-        ax.text(0.5, 0.95, f'r = {r:.3f} {sig}',
-               transform=ax.transAxes, fontsize=11, verticalalignment='top',
-               ha='center', fontweight='bold',
-               bbox=dict(boxstyle='round', facecolor=color_box, alpha=0.7))
-        
-        ax.text(0.5, 0.05, f'n = {len(subset)}',
-               transform=ax.transAxes, fontsize=10, verticalalignment='bottom',
-               ha='center')
-        
-        ax.set_xlabel(metric_label, fontsize=10)
-        if idx == 0:
-            ax.set_ylabel('FVC (ml)', fontsize=11)
-        ax.set_title(bin_label, fontsize=10, fontweight='bold')
-        ax.grid(True, alpha=0.3)
-    
-    fig.suptitle(f'FVC vs {metric_label} - Comparison Across Time Periods', 
-                fontsize=13, fontweight='bold')
-    
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-    
-    output_path = output_dir / f'fvc_vs_{metric_name}_comparison.png'
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    return output_path
-
-
-def create_individual_week_plots(df, metric_name, metric_label, week_bins, output_dir):
-    """Create individual plots for EACH specific week range"""
-    
-    results = []
-    
-    for min_week, max_week, bin_label in week_bins:
-        # Filter data
-        subset = df[(df['week'] > min_week) & (df['week'] <= max_week)]
-        subset = subset[[metric_name, 'FVC', 'week']].dropna()
-        
-        if len(subset) < 5:
-            results.append({
-                'week_range': bin_label,
-                'n': len(subset),
-                'status': 'insufficient data'
-            })
-            continue
-        
-        # Create single plot
-        fig, ax = plt.subplots(figsize=(10, 7))
-        
-        # Scatter with gradient
-        scatter = ax.scatter(subset[metric_name], subset['FVC'], 
-                           c=subset['week'], cmap='plasma', 
-                           alpha=0.7, s=120, edgecolors='black', linewidth=1)
-        
-        cbar = plt.colorbar(scatter, ax=ax)
-        cbar.set_label('Week', fontsize=12, rotation=270, labelpad=20)
-        
-        # Trend line
-        z = np.polyfit(subset[metric_name], subset['FVC'], 1)
-        p = np.poly1d(z)
-        x_trend = np.linspace(subset[metric_name].min(), subset[metric_name].max(), 100)
-        ax.plot(x_trend, p(x_trend), 'r--', linewidth=3, alpha=0.8, label='Linear fit')
-        
-        # Correlation
-        r, p_val = pearsonr(subset[metric_name], subset['FVC'])
-        
-        # Stats box
-        stats_text = f'Pearson r = {r:.4f}\n'
-        stats_text += f'p-value = {p_val:.4f}\n'
-        stats_text += f'n = {len(subset)} samples\n'
-        
-        if p_val < 0.001:
-            sig_text = '*** Highly Significant'
-            box_color = 'lightgreen'
-        elif p_val < 0.01:
-            sig_text = '** Significant'
-            box_color = 'lightgreen'
-        elif p_val < 0.05:
-            sig_text = '* Significant'
-            box_color = 'lightyellow'
-        else:
-            sig_text = 'Not Significant'
-            box_color = 'lightcoral'
-        
-        stats_text += f'\n{sig_text}'
-        
-        ax.text(0.05, 0.95, stats_text,
-               transform=ax.transAxes, fontsize=11, verticalalignment='top',
-               bbox=dict(boxstyle='round', facecolor=box_color, alpha=0.8, pad=1))
-        
-        ax.set_xlabel(f'{metric_label}\n(measured at baseline, week 0)', fontsize=13)
-        ax.set_ylabel('FVC (ml)', fontsize=13)
-        ax.set_title(f'FVC vs {metric_label}\n{bin_label}', 
-                    fontsize=14, fontweight='bold', pad=15)
-        ax.legend(loc='lower right', fontsize=11)
-        ax.grid(True, alpha=0.3, linestyle='--')
-        
-        plt.tight_layout()
-        
-        # Save with sanitized filename
-        safe_label = bin_label.replace(' ', '_').replace('(', '').replace(')', '').replace('+', 'plus')
-        output_path = output_dir / f'{metric_name}_{safe_label}.png'
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        results.append({
-            'week_range': bin_label,
-            'r': r,
-            'p_val': p_val,
-            'n': len(subset),
-            'status': 'created'
-        })
-    
-    return results
-
-
-def create_correlation_heatmap(df, metrics_info, week_bins, output_path):
-    """Create heatmap showing correlation for each metric x week bin"""
-    
-    # Prepare data
-    heatmap_data = []
-    
-    for metric_name, metric_label in metrics_info:
-        if metric_name not in df.columns:
-            continue
-            
-        row = {'Metric': metric_label}
-        
-        for min_week, max_week, bin_label in week_bins:
-            subset = df[(df['week'] > min_week) & (df['week'] <= max_week)]
-            subset = subset[[metric_name, 'FVC']].dropna()
-            
-            if len(subset) >= 5:
-                r, p_val = pearsonr(subset[metric_name], subset['FVC'])
-                # Use NaN for non-significant correlations
-                row[bin_label] = r if p_val < 0.05 else np.nan
-            else:
-                row[bin_label] = np.nan
-        
-        heatmap_data.append(row)
-    
-    heatmap_df = pd.DataFrame(heatmap_data)
-    heatmap_df = heatmap_df.set_index('Metric')
-    
-    # Plot heatmap
-    fig, ax = plt.subplots(figsize=(12, 4))
-    
-    sns.heatmap(heatmap_df, annot=True, fmt='.3f', cmap='RdYlGn', center=0,
-                vmin=-0.6, vmax=0.6, cbar_kws={'label': 'Pearson r'},
-                linewidths=1, linecolor='black', ax=ax, 
-                mask=heatmap_df.isna(), cbar=True)
-    
-    ax.set_title('Correlation Heatmap: FVC vs Baseline Metrics Across Time\n(Only significant correlations shown, p<0.05)', 
-                fontsize=13, fontweight='bold', pad=15)
-    ax.set_xlabel('Time Period', fontsize=11)
-    ax.set_ylabel('')
-    
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    return heatmap_df
-
-
 # ============================================================
 # MAIN ANALYSIS
 # ============================================================
 
 def main():
     print("="*80)
-    print("OSIC AIRWAY METRICS vs FVC COMPREHENSIVE ANALYSIS")
-    print("IMPORTANT: Pipeline metrics are from baseline CT (week 0)")
+    print("OSIC AIRWAY METRICS vs FVC ANALYSIS")
+    print("FVC Metric Correlations + Evolution/Decline Analysis")
     print("="*80)
     
     # Load data
@@ -1023,18 +605,20 @@ def main():
     # Save integrated dataset
     dataset_path = OUTPUT_DIR / "integrated_dataset.csv"
     df.to_csv(dataset_path, index=False)
-    print(f"\n✓ Integrated dataset saved to: {dataset_path}")
+    print(f"\nIntegrated dataset saved to: {dataset_path}")
     
     print("\n" + "="*80)
-    print("WEEK DISTRIBUTION")
+    print("DATA SUMMARY")
     print("="*80)
     print(f"\nAll airway metrics: measured at week 0 (baseline CT)")
     print(f"FVC measurements: week {df['week'].min()} to {df['week'].max()}")
-    print(f"Median follow-up: {df['week'].median():.0f} weeks\n")
+    print(f"Median follow-up: {df['week'].median():.0f} weeks")
+    print(f"Total records: {len(df)}")
+    print(f"Unique patients: {df['patient'].nunique()}\n")
     
-    # === PART 1: OVERALL CORRELATIONS ===
+    # === PART 1: FVC vs METRIC CORRELATIONS ===
     print("="*80)
-    print("PART 1: OVERALL CORRELATIONS (all time points)")
+    print("PART 1: FVC vs METRICS - OVERALL CORRELATIONS")
     print("="*80)
     
     corr_df = create_all_plots(df)
@@ -1054,9 +638,9 @@ def main():
         sig = "***" if row.pearson_p < 0.001 else ("**" if row.pearson_p < 0.01 else ("*" if row.pearson_p < 0.05 else ""))
         print(f"{i:<6} {row.metric:<30} {row.pearson_r:>10.4f}  {row.pearson_p:>10.4f}  {row.spearman_r:>10.4f}  {sig}")
     
-    # === PART 2: TEMPORAL ANALYSIS ===
+    # === PART 2: FVC EVOLUTION + DECLINE RATE ===
     print("\n" + "="*80)
-    print("PART 2: TEMPORAL CORRELATION ANALYSIS")
+    print("PART 2: FVC EVOLUTION & DECLINE RATE ANALYSIS")
     print("="*80)
     
     metrics_to_analyze = [
@@ -1066,49 +650,23 @@ def main():
         ('pc_ratio', 'PC Ratio'),
         ('tapering_ratio', 'Tapering Ratio'),
         ('mean_tortuosity', 'Mean Tortuosity'),
+        ('mean_diameter', 'Mean Diameter (mm)'),
+        ('peripheral_volume_ratio', 'Peripheral Volume Ratio'),
     ]
     
-    all_temporal = []
-    
-    print("\nCreating temporal analysis plots...")
+    print("\nCreating FVC evolution and decline rate plots...")
     for metric_name, metric_label in metrics_to_analyze:
         if metric_name not in df.columns:
             continue
-        
-        # Temporal correlation plot
-        temporal_path = OUTPUT_DIR / f"temporal_{metric_name}.png"
-        temporal_df = plot_temporal_analysis(df, metric_name, metric_label, temporal_path)
-        
-        if temporal_df is not None:
-            temporal_df['metric'] = metric_name
-            all_temporal.append(temporal_df)
-            print(f"  ✓ {metric_name}: r varies {temporal_df['pearson_r'].min():.3f} to {temporal_df['pearson_r'].max():.3f}")
         
         # FVC evolution plot
         evolution_path = OUTPUT_DIR / f"evolution_{metric_name}.png"
         decline_df = plot_fvc_evolution(df, metric_name, metric_label, evolution_path)
         
         if decline_df is not None and len(decline_df) > 0:
-            print(f"      Decline: Q1={decline_df.iloc[0]['mean_decline']:.2f}, Q4={decline_df.iloc[-1]['mean_decline']:.2f} ml/week")
-    
-    # Save temporal summary
-    if all_temporal:
-        temporal_summary = pd.concat(all_temporal, ignore_index=True)
-        temporal_summary.to_csv(OUTPUT_DIR / "temporal_correlation_summary.csv", index=False)
-        
-        print("\n" + "="*80)
-        print("TEMPORAL CORRELATION DETAILS")
-        print("="*80)
-        
-        for metric_name in temporal_summary['metric'].unique():
-            metric_data = temporal_summary[temporal_summary['metric'] == metric_name]
-            print(f"\n{metric_name.upper()}:")
-            print(f"  {'Week Range':<15} {'Pearson r':<10} {'p-value':<10} {'N':<6} {'Sig'}")
-            print(f"  {'-'*55}")
-            
-            for _, row in metric_data.iterrows():
-                sig = "***" if row['pearson_p'] < 0.001 else ("**" if row['pearson_p'] < 0.01 else ("*" if row['pearson_p'] < 0.05 else ""))
-                print(f"  {row['week_range']:<15} {row['pearson_r']:>9.3f} {row['pearson_p']:>9.4f} {row['n_samples']:<6} {sig}")
+            print(f"  {metric_name}")
+            for idx, row in decline_df.iterrows():
+                print(f"      {row['quartile']}: {row['mean_decline']:.2f} ± {row['std_decline']:.2f} ml/week")
     
     # === FINAL SUMMARY ===
     print("\n" + "="*80)
@@ -1117,37 +675,29 @@ def main():
     
     significant = corr_df_sorted[corr_df_sorted['pearson_p'] < 0.05]
     
-    print("\n1. STRONGEST CORRELATIONS WITH FVC:")
-    for i, row in enumerate(corr_df_sorted.head(3).itertuples(), 1):
+    print("\n1. METRIC-FVC CORRELATIONS (strongest):")
+    for i, row in enumerate(corr_df_sorted.head(5).itertuples(), 1):
         strength = "Strong" if abs(row.pearson_r) >= 0.5 else ("Moderate" if abs(row.pearson_r) >= 0.3 else "Weak")
         direction = "positive" if row.pearson_r > 0 else "negative"
-        print(f"   {i}. {row.metric}: r={row.pearson_r:.3f} ({strength} {direction})")
+        sig = "***" if row.pearson_p < 0.001 else ("**" if row.pearson_p < 0.01 else ("*" if row.pearson_p < 0.05 else ""))
+        print(f"   {i}. {row.metric}: r={row.pearson_r:.3f} ({strength} {direction}) {sig}")
     
     print("\n2. STATISTICALLY SIGNIFICANT (p<0.05):")
     if len(significant) > 0:
-        for row in significant.itertuples():
-            print(f"   - {row.metric}: r={row.pearson_r:.3f}, p={row.pearson_p:.4f}")
+        print(f"   Found {len(significant)} significant correlations")
     else:
-        print("   - None found")
-    
-    print("\n3. TEMPORAL PATTERNS:")
-    print("   - Correlations are measured between baseline CT metrics (week 0)")
-    print("     and FVC at various follow-up time points")
-    print("   - Stronger early correlations suggest baseline severity markers")
-    print("   - Persistent correlations suggest prognostic value")
+        print("   No significant correlations found")
     
     print("\n" + "="*80)
     print("ANALYSIS COMPLETE")
     print("="*80)
-    print(f"\nAll results saved to: {OUTPUT_DIR}")
+    print(f"\nResults saved to: {OUTPUT_DIR}")
     print(f"\nFiles generated:")
-    print(f"  - integrated_dataset.csv: Complete dataset")
-    print(f"  - correlation_results.csv: Overall correlation statistics")
-    print(f"  - correlation_summary.png: Visual summary of all correlations")
-    print(f"  - temporal_correlation_summary.csv: Week-stratified correlations")
-    print(f"  - [metric]_vs_fvc.png: Individual scatter plots ({len(corr_df)} files)")
-    print(f"  - temporal_[metric].png: Temporal analysis plots")
-    print(f"  - evolution_[metric].png: FVC evolution by quartile")
+    print(f"  - integrated_dataset.csv")
+    print(f"  - correlation_results.csv")
+    print(f"  - correlation_summary.png")
+    print(f"  - [metric]_vs_fvc.png: Scatter plots with correlations")
+    print(f"  - evolution_[metric].png: FVC evolution & decline rate")
     print("\n" + "="*80 + "\n")
 
 
