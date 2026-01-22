@@ -1,0 +1,14 @@
+================================================================================
+TOP FEATURES SUMMARY (LASSO Selection)
+================================================================================
+
+IMPORTANT FOR BOTH TASKS (0 features):
+
+SPECIFIC TO BASELINE FVC (4 features):
+  - pc_volume_product
+  - tortuosity_volume
+  - volume_per_branch
+  - volume_tapering_ratio
+
+SPECIFIC TO DECLINE RATE (1 features):
+  - volume_ml
