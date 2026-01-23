@@ -1119,14 +1119,14 @@ class OSICAnalysisPipeline:
             compatible_count = df['compatible'].sum()
             incompatible_count = len(df) - compatible_count
         
-            labels = ['Compatibili', 'Incompatibili']
+            labels = ['Compatible', 'Incompatible']
             sizes = [compatible_count, incompatible_count]
             colors = ['#2ecc71', '#e74c3c']
             explode = (0.05, 0.05)
             
             ax1.pie(sizes, explode=explode, labels=labels, colors=colors, autopct='%1.1f%%',
                     shadow=True, startangle=90, textprops={'fontsize': 12, 'weight': 'bold'})
-            ax1.set_title(f'Riduzione Dataset OSIC\nTotale pazienti: {len(df)}', 
+            ax1.set_title(f'OSIC Dataset Reduction\nTotal patients: {len(df)}', 
                           fontsize=14, weight='bold', pad=20)
             
             # Subplot 2: Barre - Ragioni incompatibilità
@@ -1134,13 +1134,13 @@ class OSICAnalysisPipeline:
                 reasons = list(self.incompatibility_reasons.keys())
                 counts = list(self.incompatibility_reasons.values())
                 
-                # Traduci nomi ragioni per visualizzazione
+                # Translate reason names for visualization
                 reason_labels = {
-                    'num_slices_out_of_range': 'Numero slices\nfuori range',
-                    'slice_thickness_out_of_range': 'Spessore slice\nfuori range',
-                    'xy_resolution_out_of_range': 'Risoluzione XY\nfuori range',
-                    'non_uniform_slices': 'Slice non\nuniformi',
-                    'other': 'Altro'
+                    'num_slices_out_of_range': 'Number of slices\nout of range',
+                    'slice_thickness_out_of_range': 'Slice thickness\nout of range',
+                    'xy_resolution_out_of_range': 'XY resolution\nout of range',
+                    'non_uniform_slices': 'Non-uniform\nslices',
+                    'other': 'Other'
                 }
                 
                 display_labels = [reason_labels.get(r, r) for r in reasons]
@@ -1148,8 +1148,8 @@ class OSICAnalysisPipeline:
                 bars = ax2.bar(range(len(reasons)), counts, color=colors_main[:len(reasons)])
                 ax2.set_xticks(range(len(reasons)))
                 ax2.set_xticklabels(display_labels, rotation=0, ha='center', fontsize=10)
-                ax2.set_ylabel('Numero pazienti', fontsize=12, weight='bold')
-                ax2.set_title('Ragioni di incompatibilità', fontsize=14, weight='bold', pad=20)
+                ax2.set_ylabel('Number of patients', fontsize=12, weight='bold')
+                ax2.set_title('Incompatibility reasons', fontsize=14, weight='bold', pad=20)
                 ax2.grid(axis='y', alpha=0.3)
                 
                 # Aggiungi valori sopra le barre
@@ -1159,7 +1159,7 @@ class OSICAnalysisPipeline:
                             f'{int(height)}',
                             ha='center', va='bottom', fontsize=11, weight='bold')
             else:
-                ax2.text(0.5, 0.5, 'Nessuna incompatibilità rilevata', 
+                ax2.text(0.5, 0.5, 'No incompatibility detected', 
                         ha='center', va='center', transform=ax2.transAxes, fontsize=12)
                 ax2.axis('off')
             
@@ -1187,7 +1187,7 @@ class OSICAnalysisPipeline:
             bins = np.arange(0, max(all_slices) + 50, 50)
             
             ax.hist([compatible_slices, incompatible_slices], bins=bins, 
-                    label=['Compatibili', 'Incompatibili'], 
+                    label=['Compatible', 'Incompatible'], 
                     color=['#2ecc71', '#e74c3c'], alpha=0.7, edgecolor='black')
             
             # Linee verticali per i criteri
@@ -1196,14 +1196,14 @@ class OSICAnalysisPipeline:
             ax.axvline(self.criteria['max_slices'], color='red', linestyle='--', 
                        linewidth=2, label=f"Max slices: {self.criteria['max_slices']}")
             
-            ax.set_xlabel('Numero di slices', fontsize=12, weight='bold')
-            ax.set_ylabel('Numero di pazienti', fontsize=12, weight='bold')
-            ax.set_title('Distribuzione numero slices (pre-filtro)', fontsize=14, weight='bold', pad=20)
+            ax.set_xlabel('Number of slices', fontsize=12, weight='bold')
+            ax.set_ylabel('Number of patients', fontsize=12, weight='bold')
+            ax.set_title('Number of slices distribution (pre-filter)', fontsize=14, weight='bold', pad=20)
             ax.legend(fontsize=11)
             ax.grid(axis='y', alpha=0.3)
             
-            # Statistiche
-            stats_text = f"Media: {all_slices.mean():.0f}\nMediana: {all_slices.median():.0f}\nStd: {all_slices.std():.0f}"
+            # Statistics
+            stats_text = f"Mean: {all_slices.mean():.0f}\nMedian: {all_slices.median():.0f}\nStd: {all_slices.std():.0f}"
             ax.text(0.98, 0.97, stats_text, transform=ax.transAxes, 
                     fontsize=10, verticalalignment='top', horizontalalignment='right',
                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
@@ -1231,7 +1231,7 @@ class OSICAnalysisPipeline:
             bins_thickness = np.arange(0, min(max(all_thickness) + 0.2, 3.0), 0.1)
             
             ax.hist([compatible_thickness, incompatible_thickness], bins=bins_thickness,
-                    label=['Compatibili', 'Incompatibili'],
+                    label=['Compatible', 'Incompatible'],
                     color=['#2ecc71', '#e74c3c'], alpha=0.7, edgecolor='black')
             
             # Linee verticali per i criteri
@@ -1241,13 +1241,13 @@ class OSICAnalysisPipeline:
                        linewidth=2, label=f"Max: {self.criteria['max_slice_thickness']}mm")
             
             ax.set_xlabel('Slice thickness (mm)', fontsize=12, weight='bold')
-            ax.set_ylabel('Numero di pazienti', fontsize=12, weight='bold')
-            ax.set_title('Distribuzione spessore slice (pre-filtro)', fontsize=14, weight='bold', pad=20)
+            ax.set_ylabel('Number of patients', fontsize=12, weight='bold')
+            ax.set_title('Slice thickness distribution (pre-filter)', fontsize=14, weight='bold', pad=20)
             ax.legend(fontsize=11)
             ax.grid(axis='y', alpha=0.3)
             
-            # Statistiche
-            stats_text = f"Media: {all_thickness.mean():.3f}mm\nMediana: {all_thickness.median():.3f}mm\nStd: {all_thickness.std():.3f}mm"
+            # Statistics
+            stats_text = f"Mean: {all_thickness.mean():.3f}mm\nMedian: {all_thickness.median():.3f}mm\nStd: {all_thickness.std():.3f}mm"
             ax.text(0.98, 0.97, stats_text, transform=ax.transAxes,
                     fontsize=10, verticalalignment='top', horizontalalignment='right',
                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
@@ -1275,7 +1275,7 @@ class OSICAnalysisPipeline:
             bins_xy = np.arange(0, min(max(all_xy) + 0.1, 2.0), 0.05)
             
             ax.hist([compatible_xy, incompatible_xy], bins=bins_xy,
-                    label=['Compatibili', 'Incompatibili'],
+                    label=['Compatible', 'Incompatible'],
                     color=['#2ecc71', '#e74c3c'], alpha=0.7, edgecolor='black')
             
             # Linee verticali per i criteri
@@ -1285,13 +1285,13 @@ class OSICAnalysisPipeline:
                        linewidth=2, label=f"Max: {self.criteria['max_xy_resolution']}mm")
             
             ax.set_xlabel('XY resolution (mm)', fontsize=12, weight='bold')
-            ax.set_ylabel('Numero di pazienti', fontsize=12, weight='bold')
-            ax.set_title('Distribuzione risoluzione XY (pre-filtro)', fontsize=14, weight='bold', pad=20)
+            ax.set_ylabel('Number of patients', fontsize=12, weight='bold')
+            ax.set_title('XY resolution distribution (pre-filter)', fontsize=14, weight='bold', pad=20)
             ax.legend(fontsize=11)
             ax.grid(axis='y', alpha=0.3)
             
-            # Statistiche
-            stats_text = f"Media: {all_xy.mean():.3f}mm\nMediana: {all_xy.median():.3f}mm\nStd: {all_xy.std():.3f}mm"
+            # Statistics
+            stats_text = f"Mean: {all_xy.mean():.3f}mm\nMedian: {all_xy.median():.3f}mm\nStd: {all_xy.std():.3f}mm"
             ax.text(0.98, 0.97, stats_text, transform=ax.transAxes,
                     fontsize=10, verticalalignment='top', horizontalalignment='right',
                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
@@ -1315,20 +1315,20 @@ class OSICAnalysisPipeline:
             # BoxPlot 1: Numero slices
             ax = axes[0, 0]
             data_slices = [compatible_slices, incompatible_slices]
-            bp1 = ax.boxplot(data_slices, labels=['Compatibili', 'Incompatibili'],
+            bp1 = ax.boxplot(data_slices, labels=['Compatible', 'Incompatible'],
                              patch_artist=True, notch=True)
             for patch, color in zip(bp1['boxes'], ['#2ecc71', '#e74c3c']):
                 patch.set_facecolor(color)
                 patch.set_alpha(0.7)
             ax.axhline(self.criteria['min_slices'], color='red', linestyle='--', alpha=0.5)
-            ax.set_ylabel('Numero di slices', fontsize=11, weight='bold')
-            ax.set_title('Boxplot: Numero slices', fontsize=12, weight='bold')
+            ax.set_ylabel('Number of slices', fontsize=11, weight='bold')
+            ax.set_title('Boxplot: Number of slices', fontsize=12, weight='bold')
             ax.grid(axis='y', alpha=0.3)
             
             # BoxPlot 2: Slice thickness
             ax = axes[0, 1]
             data_thickness = [compatible_thickness, incompatible_thickness]
-            bp2 = ax.boxplot(data_thickness, labels=['Compatibili', 'Incompatibili'],
+            bp2 = ax.boxplot(data_thickness, labels=['Compatible', 'Incompatible'],
                              patch_artist=True, notch=True)
             for patch, color in zip(bp2['boxes'], ['#2ecc71', '#e74c3c']):
                 patch.set_facecolor(color)
@@ -1336,13 +1336,13 @@ class OSICAnalysisPipeline:
             ax.axhline(self.criteria['min_slice_thickness'], color='red', linestyle='--', alpha=0.5)
             ax.axhline(self.criteria['max_slice_thickness'], color='red', linestyle='--', alpha=0.5)
             ax.set_ylabel('Slice thickness (mm)', fontsize=11, weight='bold')
-            ax.set_title('Boxplot: Spessore slice', fontsize=12, weight='bold')
+            ax.set_title('Boxplot: Slice thickness', fontsize=12, weight='bold')
             ax.grid(axis='y', alpha=0.3)
             
             # BoxPlot 3: XY resolution
             ax = axes[1, 0]
             data_xy = [compatible_xy, incompatible_xy]
-            bp3 = ax.boxplot(data_xy, labels=['Compatibili', 'Incompatibili'],
+            bp3 = ax.boxplot(data_xy, labels=['Compatible', 'Incompatible'],
                              patch_artist=True, notch=True)
             for patch, color in zip(bp3['boxes'], ['#2ecc71', '#e74c3c']):
                 patch.set_facecolor(color)
@@ -1350,7 +1350,7 @@ class OSICAnalysisPipeline:
             ax.axhline(self.criteria['min_xy_resolution'], color='red', linestyle='--', alpha=0.5)
             ax.axhline(self.criteria['max_xy_resolution'], color='red', linestyle='--', alpha=0.5)
             ax.set_ylabel('XY resolution (mm)', fontsize=11, weight='bold')
-            ax.set_title('Boxplot: Risoluzione XY', fontsize=12, weight='bold')
+            ax.set_title('Boxplot: XY resolution', fontsize=12, weight='bold')
             ax.grid(axis='y', alpha=0.3)
             
             # Tabella statistiche comparative
@@ -1358,25 +1358,25 @@ class OSICAnalysisPipeline:
             ax.axis('off')
             
             table_data = [
-                ['Metrica', 'Compatibili', 'Incompatibili', 'Tutti'],
+                ['Metric', 'Compatible', 'Incompatible', 'All'],
                 ['', '', '', ''],
-                ['N. pazienti', f"{compatible_count}", f"{incompatible_count}", f"{len(df)}"],
+                ['N. patients', f"{compatible_count}", f"{incompatible_count}", f"{len(df)}"],
                 ['', '', '', ''],
-                ['Slices (media)', f"{compatible_slices.mean():.0f}", 
+                ['Slices (mean)', f"{compatible_slices.mean():.0f}", 
                  f"{incompatible_slices.mean():.0f}" if len(incompatible_slices) > 0 else "N/A",
                  f"{all_slices.mean():.0f}"],
                 ['Slices (std)', f"{compatible_slices.std():.0f}",
                  f"{incompatible_slices.std():.0f}" if len(incompatible_slices) > 0 else "N/A",
                  f"{all_slices.std():.0f}"],
                 ['', '', '', ''],
-                ['Thickness (media)', f"{compatible_thickness.mean():.3f}mm",
+                ['Thickness (mean)', f"{compatible_thickness.mean():.3f}mm",
                  f"{incompatible_thickness.mean():.3f}mm" if len(incompatible_thickness) > 0 else "N/A",
                  f"{all_thickness.mean():.3f}mm"],
                 ['Thickness (std)', f"{compatible_thickness.std():.3f}mm",
                  f"{incompatible_thickness.std():.3f}mm" if len(incompatible_thickness) > 0 else "N/A",
                  f"{all_thickness.std():.3f}mm"],
                 ['', '', '', ''],
-                ['XY res (media)', f"{compatible_xy.mean():.3f}mm",
+                ['XY res (mean)', f"{compatible_xy.mean():.3f}mm",
                  f"{incompatible_xy.mean():.3f}mm" if len(incompatible_xy) > 0 else "N/A",
                  f"{all_xy.mean():.3f}mm"],
                 ['XY res (std)', f"{compatible_xy.std():.3f}mm",
@@ -1403,9 +1403,9 @@ class OSICAnalysisPipeline:
                     if i % 2 == 0:
                         cell.set_facecolor('#ecf0f1')
             
-            ax.set_title('Statistiche comparative', fontsize=12, weight='bold', pad=20)
+            ax.set_title('Comparative statistics', fontsize=12, weight='bold', pad=20)
             
-            plt.suptitle('Summary Multi-Metrica Dataset OSIC (Pre-Filtro)', 
+            plt.suptitle('OSIC Dataset Multi-Metric Summary (Pre-Filter)', 
                         fontsize=16, weight='bold', y=0.995)
             plt.tight_layout(rect=[0, 0, 1, 0.99])
             

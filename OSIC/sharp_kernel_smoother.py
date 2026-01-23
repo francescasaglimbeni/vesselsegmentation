@@ -734,9 +734,9 @@ class SharpKernelSmoother:
         max_val = max(df['lung_snr_original'].max(), df['lung_snr_smoothed'].max())
         ax1.plot([0, max_val], [0, max_val], 'k--', alpha=0.3, label='No change')
         
-        ax1.set_xlabel('SNR Originale (polmone)', fontsize=12, weight='bold')
-        ax1.set_ylabel('SNR Dopo Smoothing (polmone)', fontsize=12, weight='bold')
-        ax1.set_title('Signal-to-Noise Ratio: Polmone', fontsize=14, weight='bold')
+        ax1.set_xlabel('Original SNR (lung)', fontsize=12, weight='bold')
+        ax1.set_ylabel('SNR After Smoothing (lung)', fontsize=12, weight='bold')
+        ax1.set_title('Signal-to-Noise Ratio: Lung', fontsize=14, weight='bold')
         ax1.legend(fontsize=10)
         ax1.grid(alpha=0.3)
         
@@ -753,9 +753,9 @@ class SharpKernelSmoother:
         max_val_tissue = max(df['tissue_snr_original'].max(), df['tissue_snr_smoothed'].max())
         ax2.plot([0, max_val_tissue], [0, max_val_tissue], 'k--', alpha=0.3, label='No change')
         
-        ax2.set_xlabel('SNR Originale (tessuto)', fontsize=12, weight='bold')
-        ax2.set_ylabel('SNR Dopo Smoothing (tessuto)', fontsize=12, weight='bold')
-        ax2.set_title('Signal-to-Noise Ratio: Tessuto Molle', fontsize=14, weight='bold')
+        ax2.set_xlabel('Original SNR (tissue)', fontsize=12, weight='bold')
+        ax2.set_ylabel('SNR After Smoothing (tissue)', fontsize=12, weight='bold')
+        ax2.set_title('Signal-to-Noise Ratio: Soft Tissue', fontsize=14, weight='bold')
         ax2.legend(fontsize=10)
         ax2.grid(alpha=0.3)
         
@@ -796,11 +796,11 @@ class SharpKernelSmoother:
         # Zona ideale (alto-destra)
         ax.axhline(y=85, color='green', linestyle='--', alpha=0.3, linewidth=2)
         ax.axvline(x=40, color='green', linestyle='--', alpha=0.3, linewidth=2)
-        ax.fill_between([40, 100], 85, 100, alpha=0.1, color='green', label='Zona ideale')
+        ax.fill_between([40, 100], 85, 100, alpha=0.1, color='green', label='Ideal zone')
         
-        ax.set_xlabel('Riduzione Rumore (%)', fontsize=13, weight='bold')
-        ax.set_ylabel('Preservazione Bordi (%)', fontsize=13, weight='bold')
-        ax.set_title('Trade-off: Riduzione Rumore vs Preservazione Bordi', 
+        ax.set_xlabel('Noise Reduction (%)', fontsize=13, weight='bold')
+        ax.set_ylabel('Edge Preservation (%)', fontsize=13, weight='bold')
+        ax.set_title('Trade-off: Noise Reduction vs Edge Preservation', 
                     fontsize=15, weight='bold', pad=20)
         ax.legend(fontsize=11, loc='lower left')
         ax.grid(alpha=0.3)
@@ -824,11 +824,11 @@ class SharpKernelSmoother:
         axes = axes.flatten()
         
         metrics_to_plot = [
-            ('lung_noise_reduction', 'Riduzione Rumore Polmone (%)', 'higher'),
-            ('edge_preservation_percent', 'Preservazione Bordi (%)', 'higher'),
-            ('smoothness_improvement', 'Miglioramento Smoothness (%)', 'higher'),
-            ('histogram_similarity', 'Similarità Istogramma', 'higher'),
-            ('execution_time_seconds', 'Tempo Esecuzione (s)', 'lower'),
+            ('lung_noise_reduction', 'Lung Noise Reduction (%)', 'higher'),
+            ('edge_preservation_percent', 'Edge Preservation (%)', 'higher'),
+            ('smoothness_improvement', 'Smoothness Improvement (%)', 'higher'),
+            ('histogram_similarity', 'Histogram Similarity', 'higher'),
+            ('execution_time_seconds', 'Execution Time (s)', 'lower'),
             ('psnr', 'PSNR (dB)', 'higher')
         ]
         
@@ -877,7 +877,7 @@ class SharpKernelSmoother:
                 if idx >= 3:
                     ax.set_xticklabels(labels_to_plot, rotation=15, ha='right')
         
-        plt.suptitle('Confronto Metriche di Qualità per Metodo di Smoothing',
+        plt.suptitle('Quality Metrics Comparison by Smoothing Method',
                     fontsize=16, weight='bold', y=0.995)
         plt.tight_layout(rect=[0, 0, 1, 0.99])
         
@@ -901,13 +901,13 @@ class SharpKernelSmoother:
         for method in methods:
             method_data = df[df['method'] == method]
             summary_data.append({
-                'Metodo': method.capitalize(),
-                'SNR Polmone': f"{method_data['lung_snr_smoothed'].mean():.2f}",
-                'Riduzione Rumore (%)': f"{method_data['lung_noise_reduction'].mean():.1f}",
-                'Preservazione Bordi (%)': f"{method_data['edge_preservation_percent'].mean():.1f}",
+                'Method': method.capitalize(),
+                'Lung SNR': f"{method_data['lung_snr_smoothed'].mean():.2f}",
+                'Noise Reduction (%)': f"{method_data['lung_noise_reduction'].mean():.1f}",
+                'Edge Preservation (%)': f"{method_data['edge_preservation_percent'].mean():.1f}",
                 'Smoothness (%)': f"{method_data['smoothness_improvement'].mean():.1f}",
-                'Similarità Hist.': f"{method_data['histogram_similarity'].mean():.3f}",
-                'Tempo (s)': f"{method_data['execution_time_seconds'].mean():.2f}",
+                'Hist. Similarity': f"{method_data['histogram_similarity'].mean():.3f}",
+                'Time (s)': f"{method_data['execution_time_seconds'].mean():.2f}",
                 'PSNR (dB)': f"{method_data['psnr'].mean():.1f}"
             })
         
@@ -949,7 +949,7 @@ class SharpKernelSmoother:
                     cell.set_linewidth(3)
                     cell.set_edgecolor('gold')
         
-        ax.set_title('Tabella Riassuntiva: Confronto Metodi di Smoothing\n(Gaussian evidenziato in oro)',
+        ax.set_title('Summary Table: Smoothing Methods Comparison\n(Gaussian highlighted in gold)',
                     fontsize=14, weight='bold', pad=20)
         
         plt.tight_layout()
