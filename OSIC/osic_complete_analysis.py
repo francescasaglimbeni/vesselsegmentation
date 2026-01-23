@@ -22,9 +22,34 @@ from pathlib import Path
 from datetime import datetime
 import hashlib
 import warnings
+import matplotlib
+matplotlib.use('Agg')  # Backend non interattivo per salvare grafici
+import matplotlib.pyplot as plt
+import pandas as pd
+from collections import defaultdict
 
 # Sopprime i warning di SimpleITK (gestiamo noi i check)
 warnings.filterwarnings('ignore', category=UserWarning, module='SimpleITK')
+
+
+def convert_numpy_types(obj):
+    """
+    Converte ricorsivamente tipi numpy in tipi Python nativi per JSON serialization
+    """
+    if isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(convert_numpy_types(item) for item in obj)
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    else:
+        return obj
 
 
 class OSICAnalysisPipeline:
@@ -68,6 +93,12 @@ class OSICAnalysisPipeline:
             'validation_failed': 0,
             'errors': 0,
         }
+        
+        # Raccolta metriche per TUTTI i pazienti (per analisi pre-filtro)
+        self.all_metrics = []
+        
+        # Conteggio motivazioni incompatibilità
+        self.incompatibility_reasons = defaultdict(int)
     
     
     # ==================== SEZIONE 1: GESTIONE SCAN VALIDE ====================
@@ -849,10 +880,22 @@ class OSICAnalysisPipeline:
         # Step 4: Genera report finale
         report = self._generate_final_report(results)
         
+        # Step 5: Genera visualizzazioni per la tesi PRIMA di salvare JSON
+        if self.verbose:
+            print(f"\n{'='*70}")
+            print("GENERAZIONE VISUALIZZAZIONI PER TESI")
+            print(f"{'='*70}")
+        
+        visualizations = self._generate_visualizations()
+        report['visualizations'] = visualizations
+        
+        # Step 6: Converti tipi numpy in tipi Python per JSON serialization
+        report_serializable = convert_numpy_types(report)
+        
         # Salva report JSON
         report_json = os.path.join(self.output_folder, "osic_analysis_report.json")
         with open(report_json, 'w') as f:
-            json.dump(report, f, indent=2)
+            json.dump(report_serializable, f, indent=2)
         
         if self.verbose:
             print(f"\n{'='*70}")
@@ -892,8 +935,32 @@ class OSICAnalysisPipeline:
         result['compatible'] = is_compatible
         result['issues'] = issues
         
+        # Raccogli metriche per TUTTI i pazienti (anche incompatibili)
+        self.all_metrics.append({
+            'patient_id': patient_id,
+            'num_slices': int(metrics['num_slices']) if metrics['num_slices'] is not None else None,
+            'slice_thickness': float(metrics['slice_thickness']) if metrics['slice_thickness'] is not None else None,
+            'xy_resolution': float(metrics['xy_resolution']) if metrics['xy_resolution'] is not None else None,
+            'compatible': bool(is_compatible),
+            'issues': issues
+        })
+        
         if not is_compatible:
             result['status'] = 'incompatible'
+            # Registra motivazioni incompatibilità
+            for issue in issues:
+                # Estrai categoria del problema
+                if 'slice' in issue.lower() and ('poche' in issue.lower() or 'slices:' in issue.lower()):
+                    self.incompatibility_reasons['num_slices_out_of_range'] += 1
+                elif 'slice' in issue.lower() and ('sottile' in issue.lower() or 'spessa' in issue.lower()):
+                    self.incompatibility_reasons['slice_thickness_out_of_range'] += 1
+                elif 'xy' in issue.lower() or 'risoluzione' in issue.lower():
+                    self.incompatibility_reasons['xy_resolution_out_of_range'] += 1
+                elif 'uniform' in issue.lower() or 'mancant' in issue.lower():
+                    self.incompatibility_reasons['non_uniform_slices'] += 1
+                else:
+                    self.incompatibility_reasons['other'] += 1
+            
             if self.verbose:
                 print(f"  ✗ INCOMPATIBILE:")
                 for issue in issues:
@@ -1010,6 +1077,366 @@ class OSICAnalysisPipeline:
             print(f"Success rate finale: {report['summary']['validation_passed']/max(report['summary']['total_patients'],1)*100:.1f}%")
         
         return report
+    
+    
+    def _generate_visualizations(self):
+        """
+        Genera visualizzazioni per la tesi:
+        1. Riduzione del dataset (grafico a barre/torta)
+        2. Distribuzione metriche pre-filtro (istogrammi)
+        
+        Returns:
+            dict con percorsi ai file generati
+        """
+        try:
+            viz_folder = os.path.join(self.output_folder, "visualizations")
+            os.makedirs(viz_folder, exist_ok=True)
+            
+            visualizations = {}
+            
+            # Converti metriche in DataFrame per facilitare analisi
+            df = pd.DataFrame(self.all_metrics)
+            
+            if len(df) == 0:
+                if self.verbose:
+                    print("  ⚠️  Nessuna metrica raccolta")
+                return visualizations
+            
+            if self.verbose:
+                print(f"  Processando {len(df)} pazienti per visualizzazioni...")
+        
+            # Configurazione stile grafici
+            plt.style.use('seaborn-v0_8-darkgrid')
+            colors_main = ['#2ecc71', '#e74c3c', '#3498db', '#f39c12', '#9b59b6']
+            
+            # ========== GRAFICO 1: Riduzione del dataset ==========
+            if self.verbose:
+                print(f"  Generando grafico riduzione dataset...")
+        
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+            
+            # Subplot 1: Torta - Compatibili vs Incompatibili
+            compatible_count = df['compatible'].sum()
+            incompatible_count = len(df) - compatible_count
+        
+            labels = ['Compatibili', 'Incompatibili']
+            sizes = [compatible_count, incompatible_count]
+            colors = ['#2ecc71', '#e74c3c']
+            explode = (0.05, 0.05)
+            
+            ax1.pie(sizes, explode=explode, labels=labels, colors=colors, autopct='%1.1f%%',
+                    shadow=True, startangle=90, textprops={'fontsize': 12, 'weight': 'bold'})
+            ax1.set_title(f'Riduzione Dataset OSIC\nTotale pazienti: {len(df)}', 
+                          fontsize=14, weight='bold', pad=20)
+            
+            # Subplot 2: Barre - Ragioni incompatibilità
+            if len(self.incompatibility_reasons) > 0:
+                reasons = list(self.incompatibility_reasons.keys())
+                counts = list(self.incompatibility_reasons.values())
+                
+                # Traduci nomi ragioni per visualizzazione
+                reason_labels = {
+                    'num_slices_out_of_range': 'Numero slices\nfuori range',
+                    'slice_thickness_out_of_range': 'Spessore slice\nfuori range',
+                    'xy_resolution_out_of_range': 'Risoluzione XY\nfuori range',
+                    'non_uniform_slices': 'Slice non\nuniformi',
+                    'other': 'Altro'
+                }
+                
+                display_labels = [reason_labels.get(r, r) for r in reasons]
+                
+                bars = ax2.bar(range(len(reasons)), counts, color=colors_main[:len(reasons)])
+                ax2.set_xticks(range(len(reasons)))
+                ax2.set_xticklabels(display_labels, rotation=0, ha='center', fontsize=10)
+                ax2.set_ylabel('Numero pazienti', fontsize=12, weight='bold')
+                ax2.set_title('Ragioni di incompatibilità', fontsize=14, weight='bold', pad=20)
+                ax2.grid(axis='y', alpha=0.3)
+                
+                # Aggiungi valori sopra le barre
+                for bar in bars:
+                    height = bar.get_height()
+                    ax2.text(bar.get_x() + bar.get_width()/2., height,
+                            f'{int(height)}',
+                            ha='center', va='bottom', fontsize=11, weight='bold')
+            else:
+                ax2.text(0.5, 0.5, 'Nessuna incompatibilità rilevata', 
+                        ha='center', va='center', transform=ax2.transAxes, fontsize=12)
+                ax2.axis('off')
+            
+            plt.tight_layout()
+            reduction_path = os.path.join(viz_folder, "dataset_reduction.png")
+            plt.savefig(reduction_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            visualizations['dataset_reduction'] = reduction_path
+            
+            if self.verbose:
+                print(f"    ✓ Salvato: {reduction_path}")
+            
+            # ========== GRAFICO 2: Distribuzione numero slices ==========
+            if self.verbose:
+                print(f"  Generando distribuzione numero slices...")
+            
+            fig, ax = plt.subplots(figsize=(12, 6))
+            
+            # Istogramma per tutti i pazienti
+            all_slices = df['num_slices'].dropna()
+            compatible_slices = df[df['compatible']]['num_slices'].dropna()
+            incompatible_slices = df[~df['compatible']]['num_slices'].dropna()
+            
+            bins = np.arange(0, max(all_slices) + 50, 50)
+            
+            ax.hist([compatible_slices, incompatible_slices], bins=bins, 
+                    label=['Compatibili', 'Incompatibili'], 
+                    color=['#2ecc71', '#e74c3c'], alpha=0.7, edgecolor='black')
+            
+            # Linee verticali per i criteri
+            ax.axvline(self.criteria['min_slices'], color='red', linestyle='--', 
+                       linewidth=2, label=f"Min slices: {self.criteria['min_slices']}")
+            ax.axvline(self.criteria['max_slices'], color='red', linestyle='--', 
+                       linewidth=2, label=f"Max slices: {self.criteria['max_slices']}")
+            
+            ax.set_xlabel('Numero di slices', fontsize=12, weight='bold')
+            ax.set_ylabel('Numero di pazienti', fontsize=12, weight='bold')
+            ax.set_title('Distribuzione numero slices (pre-filtro)', fontsize=14, weight='bold', pad=20)
+            ax.legend(fontsize=11)
+            ax.grid(axis='y', alpha=0.3)
+            
+            # Statistiche
+            stats_text = f"Media: {all_slices.mean():.0f}\nMediana: {all_slices.median():.0f}\nStd: {all_slices.std():.0f}"
+            ax.text(0.98, 0.97, stats_text, transform=ax.transAxes, 
+                    fontsize=10, verticalalignment='top', horizontalalignment='right',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+            
+            plt.tight_layout()
+            slices_path = os.path.join(viz_folder, "distribution_num_slices.png")
+            plt.savefig(slices_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            visualizations['num_slices_distribution'] = slices_path
+            
+            if self.verbose:
+                print(f"    ✓ Salvato: {slices_path}")
+            
+            # ========== GRAFICO 3: Distribuzione slice thickness ==========
+            if self.verbose:
+                print(f"  Generando distribuzione slice thickness...")
+            
+            fig, ax = plt.subplots(figsize=(12, 6))
+            
+            all_thickness = df['slice_thickness'].dropna()
+            compatible_thickness = df[df['compatible']]['slice_thickness'].dropna()
+            incompatible_thickness = df[~df['compatible']]['slice_thickness'].dropna()
+            
+            bins_thickness = np.arange(0, min(max(all_thickness) + 0.2, 3.0), 0.1)
+            
+            ax.hist([compatible_thickness, incompatible_thickness], bins=bins_thickness,
+                    label=['Compatibili', 'Incompatibili'],
+                    color=['#2ecc71', '#e74c3c'], alpha=0.7, edgecolor='black')
+            
+            # Linee verticali per i criteri
+            ax.axvline(self.criteria['min_slice_thickness'], color='red', linestyle='--',
+                       linewidth=2, label=f"Min: {self.criteria['min_slice_thickness']}mm")
+            ax.axvline(self.criteria['max_slice_thickness'], color='red', linestyle='--',
+                       linewidth=2, label=f"Max: {self.criteria['max_slice_thickness']}mm")
+            
+            ax.set_xlabel('Slice thickness (mm)', fontsize=12, weight='bold')
+            ax.set_ylabel('Numero di pazienti', fontsize=12, weight='bold')
+            ax.set_title('Distribuzione spessore slice (pre-filtro)', fontsize=14, weight='bold', pad=20)
+            ax.legend(fontsize=11)
+            ax.grid(axis='y', alpha=0.3)
+            
+            # Statistiche
+            stats_text = f"Media: {all_thickness.mean():.3f}mm\nMediana: {all_thickness.median():.3f}mm\nStd: {all_thickness.std():.3f}mm"
+            ax.text(0.98, 0.97, stats_text, transform=ax.transAxes,
+                    fontsize=10, verticalalignment='top', horizontalalignment='right',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+            
+            plt.tight_layout()
+            thickness_path = os.path.join(viz_folder, "distribution_slice_thickness.png")
+            plt.savefig(thickness_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            visualizations['slice_thickness_distribution'] = thickness_path
+            
+            if self.verbose:
+                print(f"    ✓ Salvato: {thickness_path}")
+            
+            # ========== GRAFICO 4: Distribuzione XY resolution ==========
+            if self.verbose:
+                print(f"  Generando distribuzione XY resolution...")
+            
+            fig, ax = plt.subplots(figsize=(12, 6))
+            
+            all_xy = df['xy_resolution'].dropna()
+            compatible_xy = df[df['compatible']]['xy_resolution'].dropna()
+            incompatible_xy = df[~df['compatible']]['xy_resolution'].dropna()
+            
+            bins_xy = np.arange(0, min(max(all_xy) + 0.1, 2.0), 0.05)
+            
+            ax.hist([compatible_xy, incompatible_xy], bins=bins_xy,
+                    label=['Compatibili', 'Incompatibili'],
+                    color=['#2ecc71', '#e74c3c'], alpha=0.7, edgecolor='black')
+            
+            # Linee verticali per i criteri
+            ax.axvline(self.criteria['min_xy_resolution'], color='red', linestyle='--',
+                       linewidth=2, label=f"Min: {self.criteria['min_xy_resolution']}mm")
+            ax.axvline(self.criteria['max_xy_resolution'], color='red', linestyle='--',
+                       linewidth=2, label=f"Max: {self.criteria['max_xy_resolution']}mm")
+            
+            ax.set_xlabel('XY resolution (mm)', fontsize=12, weight='bold')
+            ax.set_ylabel('Numero di pazienti', fontsize=12, weight='bold')
+            ax.set_title('Distribuzione risoluzione XY (pre-filtro)', fontsize=14, weight='bold', pad=20)
+            ax.legend(fontsize=11)
+            ax.grid(axis='y', alpha=0.3)
+            
+            # Statistiche
+            stats_text = f"Media: {all_xy.mean():.3f}mm\nMediana: {all_xy.median():.3f}mm\nStd: {all_xy.std():.3f}mm"
+            ax.text(0.98, 0.97, stats_text, transform=ax.transAxes,
+                    fontsize=10, verticalalignment='top', horizontalalignment='right',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+            
+            plt.tight_layout()
+            xy_path = os.path.join(viz_folder, "distribution_xy_resolution.png")
+            plt.savefig(xy_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            visualizations['xy_resolution_distribution'] = xy_path
+            
+            if self.verbose:
+                print(f"    ✓ Salvato: {xy_path}")
+            
+            # ========== GRAFICO 5: Summary multi-metrica ==========
+            if self.verbose:
+                print(f"  Generando summary multi-metrica...")
+            
+            fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+            
+            # BoxPlot 1: Numero slices
+            ax = axes[0, 0]
+            data_slices = [compatible_slices, incompatible_slices]
+            bp1 = ax.boxplot(data_slices, labels=['Compatibili', 'Incompatibili'],
+                             patch_artist=True, notch=True)
+            for patch, color in zip(bp1['boxes'], ['#2ecc71', '#e74c3c']):
+                patch.set_facecolor(color)
+                patch.set_alpha(0.7)
+            ax.axhline(self.criteria['min_slices'], color='red', linestyle='--', alpha=0.5)
+            ax.set_ylabel('Numero di slices', fontsize=11, weight='bold')
+            ax.set_title('Boxplot: Numero slices', fontsize=12, weight='bold')
+            ax.grid(axis='y', alpha=0.3)
+            
+            # BoxPlot 2: Slice thickness
+            ax = axes[0, 1]
+            data_thickness = [compatible_thickness, incompatible_thickness]
+            bp2 = ax.boxplot(data_thickness, labels=['Compatibili', 'Incompatibili'],
+                             patch_artist=True, notch=True)
+            for patch, color in zip(bp2['boxes'], ['#2ecc71', '#e74c3c']):
+                patch.set_facecolor(color)
+                patch.set_alpha(0.7)
+            ax.axhline(self.criteria['min_slice_thickness'], color='red', linestyle='--', alpha=0.5)
+            ax.axhline(self.criteria['max_slice_thickness'], color='red', linestyle='--', alpha=0.5)
+            ax.set_ylabel('Slice thickness (mm)', fontsize=11, weight='bold')
+            ax.set_title('Boxplot: Spessore slice', fontsize=12, weight='bold')
+            ax.grid(axis='y', alpha=0.3)
+            
+            # BoxPlot 3: XY resolution
+            ax = axes[1, 0]
+            data_xy = [compatible_xy, incompatible_xy]
+            bp3 = ax.boxplot(data_xy, labels=['Compatibili', 'Incompatibili'],
+                             patch_artist=True, notch=True)
+            for patch, color in zip(bp3['boxes'], ['#2ecc71', '#e74c3c']):
+                patch.set_facecolor(color)
+                patch.set_alpha(0.7)
+            ax.axhline(self.criteria['min_xy_resolution'], color='red', linestyle='--', alpha=0.5)
+            ax.axhline(self.criteria['max_xy_resolution'], color='red', linestyle='--', alpha=0.5)
+            ax.set_ylabel('XY resolution (mm)', fontsize=11, weight='bold')
+            ax.set_title('Boxplot: Risoluzione XY', fontsize=12, weight='bold')
+            ax.grid(axis='y', alpha=0.3)
+            
+            # Tabella statistiche comparative
+            ax = axes[1, 1]
+            ax.axis('off')
+            
+            table_data = [
+                ['Metrica', 'Compatibili', 'Incompatibili', 'Tutti'],
+                ['', '', '', ''],
+                ['N. pazienti', f"{compatible_count}", f"{incompatible_count}", f"{len(df)}"],
+                ['', '', '', ''],
+                ['Slices (media)', f"{compatible_slices.mean():.0f}", 
+                 f"{incompatible_slices.mean():.0f}" if len(incompatible_slices) > 0 else "N/A",
+                 f"{all_slices.mean():.0f}"],
+                ['Slices (std)', f"{compatible_slices.std():.0f}",
+                 f"{incompatible_slices.std():.0f}" if len(incompatible_slices) > 0 else "N/A",
+                 f"{all_slices.std():.0f}"],
+                ['', '', '', ''],
+                ['Thickness (media)', f"{compatible_thickness.mean():.3f}mm",
+                 f"{incompatible_thickness.mean():.3f}mm" if len(incompatible_thickness) > 0 else "N/A",
+                 f"{all_thickness.mean():.3f}mm"],
+                ['Thickness (std)', f"{compatible_thickness.std():.3f}mm",
+                 f"{incompatible_thickness.std():.3f}mm" if len(incompatible_thickness) > 0 else "N/A",
+                 f"{all_thickness.std():.3f}mm"],
+                ['', '', '', ''],
+                ['XY res (media)', f"{compatible_xy.mean():.3f}mm",
+                 f"{incompatible_xy.mean():.3f}mm" if len(incompatible_xy) > 0 else "N/A",
+                 f"{all_xy.mean():.3f}mm"],
+                ['XY res (std)', f"{compatible_xy.std():.3f}mm",
+                 f"{incompatible_xy.std():.3f}mm" if len(incompatible_xy) > 0 else "N/A",
+                 f"{all_xy.std():.3f}mm"],
+            ]
+            
+            table = ax.table(cellText=table_data, cellLoc='center', loc='center',
+                            bbox=[0, 0, 1, 1])
+            table.auto_set_font_size(False)
+            table.set_fontsize(10)
+            table.scale(1, 2)
+            
+            # Formattazione header
+            for i in range(4):
+                cell = table[(0, i)]
+                cell.set_facecolor('#3498db')
+                cell.set_text_props(weight='bold', color='white')
+            
+            # Formattazione colori alternati
+            for i in range(2, len(table_data)):
+                for j in range(4):
+                    cell = table[(i, j)]
+                    if i % 2 == 0:
+                        cell.set_facecolor('#ecf0f1')
+            
+            ax.set_title('Statistiche comparative', fontsize=12, weight='bold', pad=20)
+            
+            plt.suptitle('Summary Multi-Metrica Dataset OSIC (Pre-Filtro)', 
+                        fontsize=16, weight='bold', y=0.995)
+            plt.tight_layout(rect=[0, 0, 1, 0.99])
+            
+            summary_path = os.path.join(viz_folder, "multi_metric_summary.png")
+            plt.savefig(summary_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            visualizations['multi_metric_summary'] = summary_path
+            
+            if self.verbose:
+                print(f"    ✓ Salvato: {summary_path}")
+            
+            # Salva anche statistiche in CSV
+            csv_path = os.path.join(viz_folder, "metrics_summary.csv")
+            df.to_csv(csv_path, index=False)
+            visualizations['metrics_csv'] = csv_path
+        
+            if self.verbose:
+                print(f"    ✓ Metriche salvate in CSV: {csv_path}")
+            
+            if self.verbose:
+                print(f"\n  ✅ Tutte le visualizzazioni generate in: {viz_folder}")
+            
+            return visualizations
+            
+        except Exception as e:
+            if self.verbose:
+                print(f"\n  ✗ Errore durante generazione visualizzazioni: {e}")
+                import traceback
+                traceback.print_exc()
+            return {}
 
 
 # ==================== MAIN ====================
@@ -1023,8 +1450,8 @@ def main():
     
     # CONFIGURAZIONE (modifica questi percorsi se necessario)
     pipeline.input_folder = "X:/Francesca Saglimbeni/tesi/datasets/dataset_OSIC"
-    pipeline.output_folder = "X:/Francesca Saglimbeni/tesi/datasets/OSIC_touse"
-    pipeline.validated_folder = "X:/Francesca Saglimbeni/tesi/datasets/OSIC_validated"
+    pipeline.output_folder = "X:/Francesca Saglimbeni/tesi/cancellare/osic_touse"
+    pipeline.validated_folder = "X:/Francesca Saglimbeni/tesi/cancellare/OSIC_validated"
     
     # Esegui pipeline completa
     report = pipeline.run_complete_pipeline()
