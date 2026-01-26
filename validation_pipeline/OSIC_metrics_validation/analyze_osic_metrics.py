@@ -195,15 +195,7 @@ def build_integrated_dataset(reliable_cases, clinical_data):
             if has_parenchymal:
                 row.update({
                     'mean_lung_density_HU': parenchymal.get('mean_lung_density_HU'),
-                    'percent_ground_glass_opacity': parenchymal.get('percent_ground_glass_opacity'),
-                    'percent_honeycombing': parenchymal.get('percent_honeycombing'),
-                    'percent_consolidation': parenchymal.get('percent_consolidation'),
-                    'percent_fibrotic_patterns': parenchymal.get('percent_fibrotic_patterns'),
                     'histogram_entropy': parenchymal.get('histogram_entropy'),
-                    'texture_local_std_mean': parenchymal.get('texture_local_std_mean'),
-                    'texture_local_range_mean': parenchymal.get('texture_local_range_mean'),
-                    'texture_local_mean_gradient_mean': parenchymal.get('texture_local_mean_gradient_mean'),
-                    'basal_predominance_index': parenchymal.get('basal_predominance_index'),
                 })
             
             rows.append(row)
@@ -310,15 +302,7 @@ def create_all_plots(df):
         
         # PARENCHYMAL METRICS
         ('mean_lung_density_HU', 'Mean Lung Density (HU)', 'parenchymal'),
-        ('percent_ground_glass_opacity', '% Ground Glass Opacity', 'parenchymal'),
-        ('percent_honeycombing', '% Honeycombing', 'parenchymal'),
-        ('percent_consolidation', '% Consolidation', 'parenchymal'),
-        ('percent_fibrotic_patterns', '% Total Fibrotic Patterns', 'parenchymal'),
         ('histogram_entropy', 'Histogram Entropy', 'parenchymal'),
-        ('texture_local_std_mean', 'Texture Local Std Dev (HU)', 'parenchymal'),
-        ('texture_local_range_mean', 'Texture Local Range (HU)', 'parenchymal'),
-        ('texture_local_mean_gradient_mean', 'Texture Mean Gradient', 'parenchymal'),
-        ('basal_predominance_index', 'Basal Predominance Index', 'parenchymal'),
     ]
     
     correlation_results = []
@@ -801,8 +785,7 @@ def main():
     
     # Check if we have parenchymal metrics
     parenchymal_cols = [
-        'mean_lung_density_HU', 'percent_ground_glass_opacity', 
-        'percent_honeycombing', 'percent_fibrotic_patterns'
+        'mean_lung_density_HU', 'histogram_entropy'
     ]
     has_parenchymal = any(col in df.columns and df[col].notna().any() for col in parenchymal_cols)
     
@@ -870,12 +853,17 @@ def main():
     print("="*80)
     
     metrics_to_analyze = [
+        # AIRWAY METRICS
         ('volume_ml', 'Airway Volume (ml)'),
         ('branch_count', 'Branch Count'),
         ('max_generation', 'Max Generation'),
         ('pc_ratio', 'PC Ratio'),
         ('tapering_ratio', 'Tapering Ratio'),
         ('mean_tortuosity', 'Mean Tortuosity'),
+        
+        # PARENCHYMAL METRICS
+        ('mean_lung_density_HU', 'Mean Lung Density (HU)'),
+        ('histogram_entropy', 'Histogram Entropy'),
     ]
     
     print("\nCreating FVC Percent evolution and decline rate plots...")

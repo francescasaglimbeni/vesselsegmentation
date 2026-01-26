@@ -22,15 +22,6 @@ RESULTS_ROOT = Path(r"X:\Francesca Saglimbeni\tesi\results\results_OSIC")
 VALIDATION_CSV = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\air_val\OSIC_validation.csv")
 OSIC_DATA_DIR = Path(r"X:\Francesca Saglimbeni\tesi\datasets\OSIC_correct")
 
-# Hounsfield Unit thresholds (standard values from literature)
-HU_THRESHOLDS = {
-    'lung_window': (-1024, -200),      # General lung tissue
-    'ground_glass': (-700, -500),      # Ground glass opacity (GGO)
-    'honeycombing': (-900, -700),      # Honeycombing pattern
-    'consolidation': (-100, 100),      # Consolidation
-    'emphysema': (-1024, -950)         # Emphysema
-}
-
 
 # ============================================================
 # UTILITY FUNCTIONS
@@ -141,7 +132,10 @@ def segment_lungs_totalsegmentator(ct_path, output_dir, fast=True):
 
 class ParenchymalMetricsComputer:
     """
-    Compute comprehensive parenchymal metrics for IPF assessment.
+    Compute parenchymal metrics for IPF assessment.
+    Only computes the 2 metrics actually used in analysis:
+    1. Mean Lung Density (HU)
+    2. Histogram Entropy
     """
     
     def __init__(self, ct_array, spacing, lung_mask, verbose=True):
@@ -165,16 +159,13 @@ class ParenchymalMetricsComputer:
     
     
     def compute_all_metrics(self):
-        """Compute all parenchymal metrics"""
+        """Compute the 2 key parenchymal metrics"""
         print("\n" + "="*60)
         print("COMPUTING PARENCHYMAL METRICS")
         print("="*60)
         
         self.compute_density_metrics()
-        self.compute_pattern_percentages()
         self.compute_histogram_features()
-        self.compute_texture_features()
-        self.compute_spatial_distribution()
         
         print("\n" + "="*60)
         print("PARENCHYMAL METRICS COMPLETE")
@@ -184,250 +175,51 @@ class ParenchymalMetricsComputer:
     
     
     def compute_density_metrics(self):
-        """Compute basic density metrics in Hounsfield Units"""
+        """Compute Mean Lung Density in Hounsfield Units"""
         if self.verbose:
-            print("\n[1/5] Computing Density Metrics (HU)...")
+            print("\n[1/2] Computing Mean Lung Density (HU)...")
         
         lung_hu = self.lung_hu
         
-        metrics = {
-            'mean_lung_density_HU': float(np.mean(lung_hu)),
-            'median_lung_density_HU': float(np.median(lung_hu)),
-            'std_lung_density_HU': float(np.std(lung_hu)),
-            'min_lung_density_HU': float(np.min(lung_hu)),
-            'max_lung_density_HU': float(np.max(lung_hu)),
-            'q25_lung_density_HU': float(np.percentile(lung_hu, 25)),
-            'q75_lung_density_HU': float(np.percentile(lung_hu, 75))
-        }
+        # Formula: Mean Density = (1/N) * Σ(HU_i)
+        # where N = total voxels in lung mask
+        #       HU_i = Hounsfield Unit value of voxel i
+        
+        mean_density = float(np.mean(lung_hu))
+        
+        self.metrics['mean_lung_density_HU'] = mean_density
         
         if self.verbose:
-            print(f"    Mean lung density: {metrics['mean_lung_density_HU']:.1f} HU")
-            print(f"    Median: {metrics['median_lung_density_HU']:.1f} HU")
-            print(f"    Std: {metrics['std_lung_density_HU']:.1f} HU")
-            print(f"    Range: [{metrics['min_lung_density_HU']:.0f}, {metrics['max_lung_density_HU']:.0f}] HU")
-        
-        self.metrics.update(metrics)
-    
-    
-    def compute_pattern_percentages(self):
-        """
-        Compute percentages of different parenchymal patterns.
-        Key metrics for IPF: Ground glass opacity, Honeycombing, Emphysema
-        """
-        if self.verbose:
-            print("\n[2/5] Computing Pattern Percentages...")
-        
-        lung_hu = self.lung_hu
-        total_voxels = len(lung_hu)
-        
-        # Ground Glass Opacity (GGO): -700 to -500 HU
-        ggo_voxels = np.sum((lung_hu >= HU_THRESHOLDS['ground_glass'][0]) & 
-                            (lung_hu <= HU_THRESHOLDS['ground_glass'][1]))
-        ggo_percent = 100.0 * ggo_voxels / total_voxels
-        
-        # Honeycombing: -900 to -700 HU (air-filled cysts)
-        honey_voxels = np.sum((lung_hu >= HU_THRESHOLDS['honeycombing'][0]) & 
-                              (lung_hu <= HU_THRESHOLDS['honeycombing'][1]))
-        honey_percent = 100.0 * honey_voxels / total_voxels
-        
-        # Consolidation: -100 to +100 HU
-        consol_voxels = np.sum((lung_hu >= HU_THRESHOLDS['consolidation'][0]) & 
-                               (lung_hu <= HU_THRESHOLDS['consolidation'][1]))
-        consol_percent = 100.0 * consol_voxels / total_voxels
-        
-        # Emphysema: < -950 HU
-        emphysema_voxels = np.sum(lung_hu < HU_THRESHOLDS['emphysema'][1])
-        emphysema_percent = 100.0 * emphysema_voxels / total_voxels
-        
-        # Normal lung tissue: -900 to -500 HU
-        normal_voxels = np.sum((lung_hu >= -900) & (lung_hu <= -500))
-        normal_percent = 100.0 * normal_voxels / total_voxels
-        
-        metrics = {
-            'percent_ground_glass_opacity': ggo_percent,
-            'percent_honeycombing': honey_percent,
-            'percent_consolidation': consol_percent,
-            'percent_emphysema': emphysema_percent,
-            'percent_normal_lung': normal_percent,
-            
-            # Fibrosis composite score (GGO + Honeycombing + Consolidation)
-            'percent_fibrotic_patterns': ggo_percent + honey_percent + consol_percent
-        }
-        
-        if self.verbose:
-            print(f"    Ground Glass Opacity (GGO): {ggo_percent:.2f}%")
-            print(f"    Honeycombing: {honey_percent:.2f}%")
-            print(f"    Consolidation: {consol_percent:.2f}%")
-            print(f"    Emphysema: {emphysema_percent:.2f}%")
-            print(f"    Normal lung: {normal_percent:.2f}%")
-            print(f"    Total fibrotic patterns: {metrics['percent_fibrotic_patterns']:.2f}%")
-        
-        self.metrics.update(metrics)
+            print(f"    Mean lung density: {mean_density:.1f} HU")
+            print(f"    Formula: (1/{len(lung_hu)}) * Σ(HU_i)")
     
     
     def compute_histogram_features(self):
-        """Compute histogram-based features"""
+        """Compute Histogram Entropy (Shannon entropy)"""
         if self.verbose:
-            print("\n[3/5] Computing Histogram Features...")
+            print("\n[2/2] Computing Histogram Entropy...")
         
         lung_hu = self.lung_hu
         
-        # Histogram statistics
+        # Create histogram of HU values (100 bins from -1024 to 100 HU)
         hist, bin_edges = np.histogram(lung_hu, bins=100, range=(-1024, 100))
+        
+        # Normalize histogram to get probability distribution
         hist_normalized = hist / np.sum(hist)
         
-        # Entropy (measure of heterogeneity)
+        # Remove zero probabilities for entropy calculation
         hist_nonzero = hist_normalized[hist_normalized > 0]
+        
+        # Shannon entropy formula: Entropy = -Σ p_j * log₂(p_j)
+        # where p_j = probability in bin j
         entropy = -np.sum(hist_nonzero * np.log2(hist_nonzero))
         
-        # Higher order statistics
-        skewness = skew(lung_hu)
-        kurt = kurtosis(lung_hu)
-        
-        # Interquartile range
-        iqr = np.percentile(lung_hu, 75) - np.percentile(lung_hu, 25)
-        
-        metrics = {
-            'histogram_entropy': float(entropy),
-            'histogram_skewness': float(skewness),
-            'histogram_kurtosis': float(kurt),
-            'histogram_iqr': float(iqr)
-        }
+        self.metrics['histogram_entropy'] = float(entropy)
         
         if self.verbose:
-            print(f"    Entropy: {entropy:.3f}")
-            print(f"    Skewness: {skewness:.3f}")
-            print(f"    Kurtosis: {kurt:.3f}")
-            print(f"    IQR: {iqr:.1f} HU")
-        
-        self.metrics.update(metrics)
-    
-    
-    def compute_texture_features(self):
-        """
-        Compute texture features (radiomics).
-        Using robust local statistics instead of GLCM (which is unstable for CT).
-        """
-        if self.verbose:
-            print("\n[4/5] Computing Texture Features (Radiomics)...")
-        
-        # Select central 20% of slices for texture analysis
-        z_center = self.ct_array.shape[0] // 2
-        z_range = max(1, self.ct_array.shape[0] // 5)
-        z_start = z_center - z_range // 2
-        z_end = z_center + z_range // 2
-        
-        texture_values = {
-            'local_std': [],
-            'local_range': [],
-            'local_mean_gradient': []
-        }
-        
-        for z in range(z_start, z_end):
-            if z < 0 or z >= self.ct_array.shape[0]:
-                continue
-            
-            slice_img = self.ct_array[z, :, :]
-            slice_mask = self.lung_mask[z, :, :]
-            
-            if np.sum(slice_mask) < 100:  # Skip slices with little lung tissue
-                continue
-            
-            # Local standard deviation (texture roughness)
-            local_std = ndimage.generic_filter(
-                slice_img.astype(float),
-                np.std,
-                size=5,
-                mode='constant',
-                cval=0
-            )
-            texture_values['local_std'].append(np.mean(local_std[slice_mask > 0]))
-            
-            # Local range (max - min in local window)
-            local_max = ndimage.maximum_filter(slice_img, size=5)
-            local_min = ndimage.minimum_filter(slice_img, size=5)
-            local_range = local_max - local_min
-            texture_values['local_range'].append(np.mean(local_range[slice_mask > 0]))
-            
-            # Gradient magnitude (edge strength)
-            from scipy.ndimage import sobel
-            grad_x = sobel(slice_img.astype(float), axis=0)
-            grad_y = sobel(slice_img.astype(float), axis=1)
-            grad_mag = np.sqrt(grad_x**2 + grad_y**2)
-            texture_values['local_mean_gradient'].append(np.mean(grad_mag[slice_mask > 0]))
-        
-        # Aggregate texture features
-        metrics = {}
-        for key, values in texture_values.items():
-            if len(values) > 0:
-                metrics[f'texture_{key}_mean'] = float(np.mean(values))
-                metrics[f'texture_{key}_std'] = float(np.std(values))
-            else:
-                metrics[f'texture_{key}_mean'] = np.nan
-                metrics[f'texture_{key}_std'] = np.nan
-        
-        if self.verbose:
-            print(f"    Local Std Dev: {metrics.get('texture_local_std_mean', np.nan):.1f} HU")
-            print(f"    Local Range: {metrics.get('texture_local_range_mean', np.nan):.1f} HU")
-            print(f"    Mean Gradient: {metrics.get('texture_local_mean_gradient_mean', np.nan):.1f}")
-        
-        self.metrics.update(metrics)
-    
-    
-    def compute_spatial_distribution(self):
-        """Compute spatial distribution of density patterns"""
-        if self.verbose:
-            print("\n[5/5] Computing Spatial Distribution...")
-        
-        # Divide lungs into upper/middle/lower zones
-        z_max = self.ct_array.shape[0]
-        z_upper = z_max // 3
-        z_middle = 2 * z_max // 3
-        
-        zones = {
-            'upper': (0, z_upper),
-            'middle': (z_upper, z_middle),
-            'lower': (z_middle, z_max)
-        }
-        
-        metrics = {}
-        
-        for zone_name, (z_start, z_end) in zones.items():
-            zone_mask = self.lung_mask[z_start:z_end, :, :]
-            zone_hu = self.ct_array[z_start:z_end, :, :][zone_mask > 0]
-            
-            if len(zone_hu) == 0:
-                metrics[f'mean_density_{zone_name}_zone_HU'] = np.nan
-                metrics[f'percent_fibrotic_{zone_name}_zone'] = np.nan
-                continue
-            
-            # Mean density in this zone
-            metrics[f'mean_density_{zone_name}_zone_HU'] = float(np.mean(zone_hu))
-            
-            # Percent fibrotic patterns in this zone
-            ggo = np.sum((zone_hu >= -700) & (zone_hu <= -500))
-            honey = np.sum((zone_hu >= -900) & (zone_hu <= -700))
-            consol = np.sum((zone_hu >= -100) & (zone_hu <= 100))
-            fibrotic_percent = 100.0 * (ggo + honey + consol) / len(zone_hu)
-            metrics[f'percent_fibrotic_{zone_name}_zone'] = float(fibrotic_percent)
-        
-        # Basal predominance index (lower/upper ratio)
-        if not np.isnan(metrics.get('percent_fibrotic_lower_zone', np.nan)) and \
-           not np.isnan(metrics.get('percent_fibrotic_upper_zone', np.nan)):
-            metrics['basal_predominance_index'] = (
-                metrics['percent_fibrotic_lower_zone'] / 
-                (metrics['percent_fibrotic_upper_zone'] + 1e-6)
-            )
-        else:
-            metrics['basal_predominance_index'] = np.nan
-        
-        if self.verbose:
-            print(f"    Upper zone: {metrics.get('percent_fibrotic_upper_zone', np.nan):.2f}% fibrotic")
-            print(f"    Middle zone: {metrics.get('percent_fibrotic_middle_zone', np.nan):.2f}% fibrotic")
-            print(f"    Lower zone: {metrics.get('percent_fibrotic_lower_zone', np.nan):.2f}% fibrotic")
-            print(f"    Basal predominance: {metrics.get('basal_predominance_index', np.nan):.2f}")
-        
-        self.metrics.update(metrics)
+            print(f"    Histogram entropy: {entropy:.3f}")
+            print(f"    Formula: -Σ p_j * log₂(p_j)")
+            print(f"    Bins: 100 from -1024 to 100 HU")
 
 
 # ============================================================
@@ -476,7 +268,7 @@ def process_single_case(case_name, case_dir, output_subdir="step5_parenchymal_me
         traceback.print_exc()
         return None
     
-    # Step 4: Compute parenchymal metrics
+    # Step 4: Compute parenchymal metrics (ONLY 2 metrics)
     try:
         computer = ParenchymalMetricsComputer(ct_array, spacing, lung_mask, verbose=True)
         metrics = computer.compute_all_metrics()
@@ -512,34 +304,19 @@ def process_single_case(case_name, case_dir, output_subdir="step5_parenchymal_me
         f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"CT scan: {ct_path}\n\n")
         
-        f.write("DENSITY METRICS (Hounsfield Units)\n")
+        f.write("PARENCHYMAL METRICS (2 KEY METRICS)\n")
         f.write("-"*80 + "\n")
-        f.write(f"  Mean lung density: {metrics.get('mean_lung_density_HU', np.nan):.1f} HU\n")
-        f.write(f"  Median: {metrics.get('median_lung_density_HU', np.nan):.1f} HU\n")
-        f.write(f"  Std deviation: {metrics.get('std_lung_density_HU', np.nan):.1f} HU\n\n")
+        f.write(f"  1. Mean Lung Density: {metrics.get('mean_lung_density_HU', np.nan):.1f} HU\n")
+        f.write(f"     Formula: (1/N) * Σ(HU_i) where N = {len(computer.lung_hu)} voxels\n\n")
         
-        f.write("PARENCHYMAL PATTERNS\n")
-        f.write("-"*80 + "\n")
-        f.write(f"  Ground Glass Opacity: {metrics.get('percent_ground_glass_opacity', np.nan):.2f}%\n")
-        f.write(f"  Honeycombing: {metrics.get('percent_honeycombing', np.nan):.2f}%\n")
-        f.write(f"  Consolidation: {metrics.get('percent_consolidation', np.nan):.2f}%\n")
-        f.write(f"  Emphysema: {metrics.get('percent_emphysema', np.nan):.2f}%\n")
-        f.write(f"  Normal lung: {metrics.get('percent_normal_lung', np.nan):.2f}%\n")
-        f.write(f"  Total fibrotic: {metrics.get('percent_fibrotic_patterns', np.nan):.2f}%\n\n")
+        f.write(f"  2. Histogram Entropy: {metrics.get('histogram_entropy', np.nan):.3f}\n")
+        f.write(f"     Formula: -Σ p_j * log₂(p_j)\n")
+        f.write(f"     Bins: 100 from -1024 to 100 HU\n\n")
         
-        f.write("SPATIAL DISTRIBUTION\n")
+        f.write("INTERPRETATION:\n")
         f.write("-"*80 + "\n")
-        f.write(f"  Upper zone fibrotic: {metrics.get('percent_fibrotic_upper_zone', np.nan):.2f}%\n")
-        f.write(f"  Middle zone fibrotic: {metrics.get('percent_fibrotic_middle_zone', np.nan):.2f}%\n")
-        f.write(f"  Lower zone fibrotic: {metrics.get('percent_fibrotic_lower_zone', np.nan):.2f}%\n")
-        f.write(f"  Basal predominance: {metrics.get('basal_predominance_index', np.nan):.2f}\n\n")
-        
-        f.write("TEXTURE FEATURES (Robust Statistics)\n")
-        f.write("-"*80 + "\n")
-        f.write(f"  Local Std Dev: {metrics.get('texture_local_std_mean', np.nan):.1f} HU\n")
-        f.write(f"  Local Range: {metrics.get('texture_local_range_mean', np.nan):.1f} HU\n")
-        f.write(f"  Mean Gradient: {metrics.get('texture_local_mean_gradient_mean', np.nan):.1f}\n")
-        f.write(f"  Histogram Entropy: {metrics.get('histogram_entropy', np.nan):.3f}\n\n")
+        f.write("  • Higher Mean Density = Denser lung tissue (fibrosis)\n")
+        f.write("  • Higher Entropy = More heterogeneous tissue patterns\n\n")
         
         f.write("="*80 + "\n")
     
@@ -555,6 +332,7 @@ def process_all_cases(case_filter='RELIABLE'):
     print("="*80)
     print(f"\nResults directory: {RESULTS_ROOT}")
     print(f"Case filter: {case_filter}")
+    print(f"Computing ONLY 2 metrics: Mean Lung Density & Histogram Entropy")
     
     # Load validation data to filter cases
     if case_filter == 'RELIABLE':
@@ -615,6 +393,11 @@ def process_all_cases(case_filter='RELIABLE'):
         summary_path = RESULTS_ROOT / f"PARENCHYMAL_METRICS_SUMMARY_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         summary_df.to_csv(summary_path, index=False)
         print(f"\nSummary saved to: {summary_path}")
+        
+        # Print metrics summary
+        print(f"\nMetrics Statistics:")
+        print(f"  Mean Lung Density: {summary_df['mean_lung_density_HU'].mean():.1f} ± {summary_df['mean_lung_density_HU'].std():.1f} HU")
+        print(f"  Histogram Entropy: {summary_df['histogram_entropy'].mean():.3f} ± {summary_df['histogram_entropy'].std():.3f}")
     
     print("\n" + "="*80)
     print("DONE")
