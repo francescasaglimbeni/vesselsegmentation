@@ -16,9 +16,9 @@ warnings.filterwarnings('ignore')
 
 VALIDATION_CSV = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\air_val\OSIC_validation.csv")
 RESULTS_ROOT = Path(r"X:\Francesca Saglimbeni\tesi\results\results_OSIC")
-TRAIN_CSV = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\train.csv")
-TEST_CSV = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\test.csv")
-OUTPUT_DIR = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\air_val\osic_correlation_analysis")
+TRAIN_CSV = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\OSIC_metrics_validation\train.csv")
+TEST_CSV = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\OSIC_metrics_validation\test.csv")
+OUTPUT_DIR = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\OSIC_metrics_validation\results_analysis")
 
 # Create output directory
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -91,9 +91,29 @@ def load_weibel_data(case_name):
         return None
 
 
+def load_parenchymal_metrics(case_name):
+    """Load parenchymal metrics JSON for a specific case"""
+    json_path = RESULTS_ROOT / case_name / "step5_parenchymal_metrics" / "parenchymal_metrics.json"
+    
+    if not json_path.exists():
+        return None
+    
+    try:
+        with open(json_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"  Warning: Could not load parenchymal metrics for {case_name}: {e}")
+        return None
+
+
 def extract_patient_id(case_name):
     """Extract patient ID from case name (remove _gaussian suffix if present)"""
     return case_name.replace("_gaussian", "")
+
+
+def is_smoothed_scan(case_name):
+    """Check if this is a smoothed scan (has _gaussian suffix)"""
+    return "_gaussian" in case_name
 
 
 # ============================================================
@@ -101,10 +121,11 @@ def extract_patient_id(case_name):
 # ============================================================
 
 def build_integrated_dataset(reliable_cases, clinical_data):
-    """Build integrated dataset with validation metrics + clinical data"""
-    print("\nBuilding integrated dataset...")
+    """Build integrated dataset with validation metrics + clinical data + parenchymal metrics"""
+    print("\nBuilding integrated dataset (airway + parenchymal + clinical)...")
     
     rows = []
+    cases_with_parenchymal = 0
     
     for idx, case_row in reliable_cases.iterrows():
         case_name = case_row['case']
@@ -119,6 +140,13 @@ def build_integrated_dataset(reliable_cases, clinical_data):
         # Load Weibel data
         weibel = load_weibel_data(case_name)
         
+        # Load parenchymal metrics
+        parenchymal = load_parenchymal_metrics(case_name)
+        has_parenchymal = parenchymal is not None
+        
+        if has_parenchymal:
+            cases_with_parenchymal += 1
+        
         # Get clinical data for this patient
         patient_clinical = clinical_data[clinical_data['Patient'] == patient_id]
         
@@ -131,6 +159,7 @@ def build_integrated_dataset(reliable_cases, clinical_data):
             row = {
                 'case': case_name,
                 'patient': patient_id,
+                'is_smoothed': is_smoothed_scan(case_name),
                 'week': clinical_row['Weeks'],
                 'FVC': clinical_row['FVC'],
                 'Percent': clinical_row['Percent'],
@@ -147,13 +176,7 @@ def build_integrated_dataset(reliable_cases, clinical_data):
                 
                 # Advanced metrics (from JSON)
                 'total_volume_mm3': advanced.get('total_volume_mm3'),
-                'total_surface_area_mm2': advanced.get('total_surface_area_mm2'),
-                'mean_diameter': advanced.get('mean_diameter'),
-                'median_diameter': advanced.get('median_diameter'),
-                'mean_length': advanced.get('mean_length'),
                 'mean_tortuosity': advanced.get('mean_tortuosity'),
-                'peripheral_volume_ratio': advanced.get('peripheral_volume_ratio'),
-                'central_volume_ratio': advanced.get('central_volume_ratio'),
             }
             
             # Add Weibel-specific metrics if available
@@ -168,6 +191,21 @@ def build_integrated_dataset(reliable_cases, clinical_data):
                 if len(gen5) > 0 and 'mean_diameter' in gen5.columns:
                     row['gen5_diameter'] = gen5['mean_diameter'].mean()
             
+            # Add parenchymal metrics if available
+            if has_parenchymal:
+                row.update({
+                    'mean_lung_density_HU': parenchymal.get('mean_lung_density_HU'),
+                    'percent_ground_glass_opacity': parenchymal.get('percent_ground_glass_opacity'),
+                    'percent_honeycombing': parenchymal.get('percent_honeycombing'),
+                    'percent_consolidation': parenchymal.get('percent_consolidation'),
+                    'percent_fibrotic_patterns': parenchymal.get('percent_fibrotic_patterns'),
+                    'histogram_entropy': parenchymal.get('histogram_entropy'),
+                    'texture_local_std_mean': parenchymal.get('texture_local_std_mean'),
+                    'texture_local_range_mean': parenchymal.get('texture_local_range_mean'),
+                    'texture_local_mean_gradient_mean': parenchymal.get('texture_local_mean_gradient_mean'),
+                    'basal_predominance_index': parenchymal.get('basal_predominance_index'),
+                })
+            
             rows.append(row)
     
     df = pd.DataFrame(rows)
@@ -175,6 +213,13 @@ def build_integrated_dataset(reliable_cases, clinical_data):
     print(f"  Created dataset with {len(df)} records")
     print(f"  Unique patients: {df['patient'].nunique()}")
     print(f"  Week range: {df['week'].min()} to {df['week'].max()}")
+    print(f"  Cases with parenchymal metrics: {cases_with_parenchymal}")
+    
+    # Report smoothed scans
+    if 'is_smoothed' in df.columns:
+        n_smoothed = df['is_smoothed'].sum()
+        n_smoothed_patients = df[df['is_smoothed']]['patient'].nunique()
+        print(f"  Smoothed scans: {n_smoothed_patients} patients (kernel correction applied)")
     
     return df
 
@@ -183,11 +228,11 @@ def build_integrated_dataset(reliable_cases, clinical_data):
 # VISUALIZATION
 # ============================================================
 
-def plot_metric_vs_fvc(df, metric_name, metric_label, output_path):
-    """Create scatter plot of metric vs FVC with week as color"""
+def plot_metric_vs_percent(df, metric_name, metric_label, output_path):
+    """Create scatter plot of metric vs FVC Percent (normalized) with week as color"""
     
     # Remove NaN values
-    df_clean = df[[metric_name, 'FVC', 'week']].dropna()
+    df_clean = df[[metric_name, 'Percent', 'week']].dropna()
     
     if len(df_clean) == 0:
         return None
@@ -198,7 +243,7 @@ def plot_metric_vs_fvc(df, metric_name, metric_label, output_path):
     # Create scatter plot with week as color
     scatter = ax.scatter(
         df_clean[metric_name], 
-        df_clean['FVC'],
+        df_clean['Percent'],
         c=df_clean['week'],
         cmap='viridis',
         alpha=0.6,
@@ -211,20 +256,24 @@ def plot_metric_vs_fvc(df, metric_name, metric_label, output_path):
     cbar = plt.colorbar(scatter, ax=ax)
     cbar.set_label('Week', rotation=270, labelpad=20, fontsize=12)
     
-    # Add trend line
-    z = np.polyfit(df_clean[metric_name], df_clean['FVC'], 1)
-    p = np.poly1d(z)
-    x_trend = np.linspace(df_clean[metric_name].min(), df_clean[metric_name].max(), 100)
-    ax.plot(x_trend, p(x_trend), "r--", alpha=0.8, linewidth=2, label='Linear fit')
+    # Add trend line (with error handling for numerical issues)
+    try:
+        z = np.polyfit(df_clean[metric_name], df_clean['Percent'], 1)
+        p = np.poly1d(z)
+        x_trend = np.linspace(df_clean[metric_name].min(), df_clean[metric_name].max(), 100)
+        ax.plot(x_trend, p(x_trend), "r--", alpha=0.8, linewidth=2, label='Linear fit')
+    except (np.linalg.LinAlgError, ValueError) as e:
+        # Skip trend line if numerical issues (e.g., near-constant values)
+        pass
     
     # Calculate correlations
-    pearson_r, pearson_p = pearsonr(df_clean[metric_name], df_clean['FVC'])
-    spearman_r, spearman_p = spearmanr(df_clean[metric_name], df_clean['FVC'])
+    pearson_r, pearson_p = pearsonr(df_clean[metric_name], df_clean['Percent'])
+    spearman_r, spearman_p = spearmanr(df_clean[metric_name], df_clean['Percent'])
     
     # Add labels and title
     ax.set_xlabel(metric_label, fontsize=12)
-    ax.set_ylabel('FVC (ml)', fontsize=12)
-    ax.set_title(f'{metric_label} vs FVC\n' + 
+    ax.set_ylabel('FVC Percent (% of predicted)', fontsize=12)
+    ax.set_title(f'{metric_label} vs FVC Percent\n' + 
                  f'Pearson r={pearson_r:.3f} (p={pearson_p:.4f}), Spearman ρ={spearman_r:.3f} (p={spearman_p:.4f})',
                  fontsize=13, fontweight='bold')
     
@@ -246,37 +295,51 @@ def plot_metric_vs_fvc(df, metric_name, metric_label, output_path):
 
 
 def create_all_plots(df):
-    """Create scatter plots for all metrics vs FVC"""
-    print("\nCreating correlation plots...")
+    """Create scatter plots for all metrics vs FVC Percent (normalized)"""
+    print("\nCreating correlation plots with FVC Percent (normalized)...")
     
-    # Define metrics to plot
+    # Define metrics to plot (AIRWAY + PARENCHYMAL)
     metrics = [
-        ('volume_ml', 'Airway Volume (ml)'),
-        ('branch_count', 'Branch Count'),
-        ('max_generation', 'Max Generation'),
-        ('pc_ratio', 'Peripheral/Central Ratio'),
-        ('tapering_ratio', 'Tapering Ratio'),
-        ('mean_tortuosity', 'Mean Tortuosity')
+        # AIRWAY METRICS
+        ('volume_ml', 'Airway Volume (ml)', 'airway'),
+        ('branch_count', 'Branch Count', 'airway'),
+        ('max_generation', 'Max Generation', 'airway'),
+        ('pc_ratio', 'Peripheral/Central Ratio', 'airway'),
+        ('tapering_ratio', 'Tapering Ratio', 'airway'),
+        ('mean_tortuosity', 'Mean Tortuosity', 'airway'),
+        
+        # PARENCHYMAL METRICS
+        ('mean_lung_density_HU', 'Mean Lung Density (HU)', 'parenchymal'),
+        ('percent_ground_glass_opacity', '% Ground Glass Opacity', 'parenchymal'),
+        ('percent_honeycombing', '% Honeycombing', 'parenchymal'),
+        ('percent_consolidation', '% Consolidation', 'parenchymal'),
+        ('percent_fibrotic_patterns', '% Total Fibrotic Patterns', 'parenchymal'),
+        ('histogram_entropy', 'Histogram Entropy', 'parenchymal'),
+        ('texture_local_std_mean', 'Texture Local Std Dev (HU)', 'parenchymal'),
+        ('texture_local_range_mean', 'Texture Local Range (HU)', 'parenchymal'),
+        ('texture_local_mean_gradient_mean', 'Texture Mean Gradient', 'parenchymal'),
+        ('basal_predominance_index', 'Basal Predominance Index', 'parenchymal'),
     ]
     
     correlation_results = []
     
-    for metric_name, metric_label in metrics:
+    for metric_name, metric_label, metric_type in metrics:
         if metric_name not in df.columns:
             continue
         
-        output_path = OUTPUT_DIR / f"{metric_name}_vs_fvc.png"
-        result = plot_metric_vs_fvc(df, metric_name, metric_label, output_path)
+        output_path = OUTPUT_DIR / f"{metric_name}_vs_percent.png"
+        result = plot_metric_vs_percent(df, metric_name, metric_label, output_path)
         
         if result is not None:
+            result['type'] = metric_type
             correlation_results.append(result)
-            print(f"  Created {metric_name} plot (r={result['pearson_r']:.3f})")
+            print(f"  ✓ {metric_name} (r={result['pearson_r']:.3f}, p={result['pearson_p']:.4f})")
     
     return pd.DataFrame(correlation_results)
 
 
 def plot_correlation_summary(corr_df, output_path):
-    """Create summary plot of all correlations"""
+    """Create summary plot of correlations with FVC Percent (normalized)"""
     
     # Sort by absolute Pearson correlation
     corr_df = corr_df.copy()
@@ -284,29 +347,39 @@ def plot_correlation_summary(corr_df, output_path):
     corr_df = corr_df.sort_values('abs_pearson_r', ascending=True)
     
     # Create figure
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 10))
+    
+    # Color by metric type (airway vs parenchymal)
+    colors = ['steelblue' if t == 'airway' else 'coral' for t in corr_df.get('type', ['airway']*len(corr_df))]
     
     # Plot 1: Pearson correlation
-    colors_pearson = ['red' if x < 0 else 'green' for x in corr_df['pearson_r']]
-    ax1.barh(corr_df['metric'], corr_df['pearson_r'], color=colors_pearson, alpha=0.7)
+    ax1.barh(corr_df['metric'], corr_df['pearson_r'], color=colors, alpha=0.7)
     ax1.axvline(x=0, color='black', linestyle='-', linewidth=0.8)
     ax1.set_xlabel('Pearson Correlation Coefficient', fontsize=12)
-    ax1.set_title('Pearson Correlation: Metrics vs FVC', fontsize=13, fontweight='bold')
+    ax1.set_title('Pearson Correlation: All Metrics vs FVC Percent\n(normalized for age/sex/height)', fontsize=13, fontweight='bold')
     ax1.grid(axis='x', alpha=0.3)
     
+    # Add legend
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='steelblue', alpha=0.7, label='Airway Metrics'),
+        Patch(facecolor='coral', alpha=0.7, label='Parenchymal Metrics')
+    ]
+    ax1.legend(handles=legend_elements, loc='lower right')
+    
     # Plot 2: Spearman correlation
-    colors_spearman = ['red' if x < 0 else 'green' for x in corr_df['spearman_r']]
-    ax2.barh(corr_df['metric'], corr_df['spearman_r'], color=colors_spearman, alpha=0.7)
+    ax2.barh(corr_df['metric'], corr_df['spearman_r'], color=colors, alpha=0.7)
     ax2.axvline(x=0, color='black', linestyle='-', linewidth=0.8)
     ax2.set_xlabel('Spearman Correlation Coefficient', fontsize=12)
-    ax2.set_title('Spearman Correlation: Metrics vs FVC', fontsize=13, fontweight='bold')
+    ax2.set_title('Spearman Correlation: All Metrics vs FVC Percent\n(normalized for age/sex/height)', fontsize=13, fontweight='bold')
     ax2.grid(axis='x', alpha=0.3)
+    ax2.legend(handles=legend_elements, loc='lower right')
     
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"\nCorrelation summary plot saved to: {output_path}")
+    print(f"\n✓ Correlation summary plot saved to: {output_path}")
 
 def plot_fvc_evolution(df, metric_name, metric_label, output_path):
     """Plot FVC evolution stratified by baseline metric quartiles"""
@@ -399,7 +472,7 @@ def plot_fvc_evolution(df, metric_name, metric_label, output_path):
 
 def analyze_correlation_by_week(df, metric_name):
     """Analyze how correlation changes with week"""
-    df_clean = df[[metric_name, 'FVC', 'week', 'patient']].dropna()
+    df_clean = df[[metric_name, 'Percent', 'week', 'patient']].dropna()
     
     if len(df_clean) == 0:
         return None
@@ -420,8 +493,8 @@ def analyze_correlation_by_week(df, metric_name):
             continue
         
         try:
-            pearson_r, pearson_p = pearsonr(subset[metric_name], subset['FVC'])
-            spearman_r, spearman_p = spearmanr(subset[metric_name], subset['FVC'])
+            pearson_r, pearson_p = pearsonr(subset[metric_name], subset['Percent'])
+            spearman_r, spearman_p = spearmanr(subset[metric_name], subset['Percent'])
             
             results.append({
                 'week_range': label,
@@ -458,7 +531,7 @@ def plot_temporal_analysis(df, metric_name, metric_label, output_path):
     ax1.set_xticks(x_pos)
     ax1.set_xticklabels(temporal_df['week_range'], rotation=45, ha='right')
     ax1.set_ylabel('Correlation Coefficient', fontsize=12)
-    ax1.set_title(f'Correlation Over Time\n{metric_label} vs FVC', fontsize=13, fontweight='bold')
+    ax1.set_title(f'Correlation Over Time\n{metric_label} vs FVC Percent', fontsize=13, fontweight='bold')
     ax1.legend(loc='best')
     ax1.grid(True, alpha=0.3)
     
@@ -473,7 +546,7 @@ def plot_temporal_analysis(df, metric_name, metric_label, output_path):
     
     # Plot 3: Scatter colored by week bin
     ax3 = axes[1, 0]
-    df_clean = df[[metric_name, 'FVC', 'week']].dropna()
+    df_clean = df[[metric_name, 'Percent', 'week']].dropna()
     df_clean['week_bin'] = pd.cut(df_clean['week'], 
                                     bins=[0, 10, 20, 30, 50, 100],
                                     labels=['0-10', '10-20', '20-30', '30-50', '>50'])
@@ -482,12 +555,12 @@ def plot_temporal_analysis(df, metric_name, metric_label, output_path):
     for i, (bin_name, color) in enumerate(zip(df_clean['week_bin'].cat.categories, colors_map)):
         subset = df_clean[df_clean['week_bin'] == bin_name]
         if len(subset) > 0:
-            ax3.scatter(subset[metric_name], subset['FVC'], 
+            ax3.scatter(subset[metric_name], subset['Percent'], 
                        label=f'Week {bin_name}', alpha=0.6, s=40, color=color, edgecolors='black', linewidth=0.5)
     
     ax3.set_xlabel(metric_label, fontsize=12)
-    ax3.set_ylabel('FVC (ml)', fontsize=12)
-    ax3.set_title('FVC vs Metric (by time period)', fontsize=13, fontweight='bold')
+    ax3.set_ylabel('FVC Percent (% of predicted)', fontsize=12)
+    ax3.set_title('FVC Percent vs Metric (by time period)', fontsize=13, fontweight='bold')
     ax3.legend(loc='best', fontsize=9)
     ax3.grid(True, alpha=0.3)
     
@@ -509,9 +582,9 @@ def plot_temporal_analysis(df, metric_name, metric_label, output_path):
     return temporal_df
 
 
-def plot_fvc_evolution(df, metric_name, metric_label, output_path):
-    """Plot FVC evolution by baseline metric quartiles"""
-    df_clean = df[[metric_name, 'FVC', 'week', 'patient']].dropna()
+def plot_percent_evolution(df, metric_name, metric_label, output_path):
+    """Plot FVC Percent evolution by baseline metric quartiles"""
+    df_clean = df[[metric_name, 'Percent', 'week', 'patient']].dropna()
     
     if len(df_clean) == 0:
         return None
@@ -526,10 +599,10 @@ def plot_fvc_evolution(df, metric_name, metric_label, output_path):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
     colors = ['red', 'orange', 'lightgreen', 'darkgreen']
     
-    # Plot 1: FVC trajectories
+    # Plot 1: FVC Percent trajectories
     for quartile, color in zip(['Q1 (Low)', 'Q2', 'Q3', 'Q4 (High)'], colors):
         subset = df_clean[df_clean['quartile'] == quartile]
-        week_stats = subset.groupby('week')['FVC'].agg(['mean', 'std', 'count']).reset_index()
+        week_stats = subset.groupby('week')['Percent'].agg(['mean', 'std', 'count']).reset_index()
         week_stats = week_stats[week_stats['count'] >= 3]
         
         if len(week_stats) > 0:
@@ -542,8 +615,8 @@ def plot_fvc_evolution(df, metric_name, metric_label, output_path):
                             alpha=0.2, color=color)
     
     ax1.set_xlabel('Week', fontsize=12)
-    ax1.set_ylabel('FVC (ml)', fontsize=12)
-    ax1.set_title(f'FVC Evolution by Baseline {metric_label}', fontsize=13, fontweight='bold')
+    ax1.set_ylabel('FVC Percent (% of predicted)', fontsize=12)
+    ax1.set_title(f'FVC Percent Evolution by Baseline {metric_label}', fontsize=13, fontweight='bold')
     ax1.legend(loc='best', fontsize=10)
     ax1.grid(True, alpha=0.3)
     
@@ -555,7 +628,7 @@ def plot_fvc_evolution(df, metric_name, metric_label, output_path):
         for patient in subset['patient'].unique():
             patient_data = subset[subset['patient'] == patient].sort_values('week')
             if len(patient_data) >= 2:
-                coeffs = np.polyfit(patient_data['week'], patient_data['FVC'], 1)
+                coeffs = np.polyfit(patient_data['week'], patient_data['Percent'], 1)
                 patient_rates.append(coeffs[0])
         
         if len(patient_rates) > 0:
@@ -573,7 +646,7 @@ def plot_fvc_evolution(df, metric_name, metric_label, output_path):
         ax2.axhline(y=0, color='black', linestyle='--', linewidth=1)
         ax2.set_xticks(x_pos)
         ax2.set_xticklabels(decline_df['quartile'])
-        ax2.set_ylabel('FVC Decline Rate (ml/week)', fontsize=12)
+        ax2.set_ylabel('FVC Percent Decline Rate (%/week)', fontsize=12)
         ax2.set_title(f'Decline Rate by Baseline {metric_label}', fontsize=13, fontweight='bold')
         ax2.grid(True, alpha=0.3, axis='y')
     
@@ -585,16 +658,140 @@ def plot_fvc_evolution(df, metric_name, metric_label, output_path):
 
 
 # ============================================================
-# DETAILED WEEK-STRATIFIED PLOTS
+# AIRWAY vs PARENCHYMAL COMPARISON
 # ============================================================
+
+def sensitivity_analysis_smoothed(df, corr_df):
+    """Perform sensitivity analysis: correlations with/without smoothed scans"""
+    
+    if 'is_smoothed' not in df.columns:
+        return None
+    
+    print("\n" + "="*80)
+    print("SENSITIVITY ANALYSIS: SMOOTHED vs NON-SMOOTHED SCANS")
+    print("="*80)
+    
+    n_total = df['patient'].nunique()
+    n_smoothed = df[df['is_smoothed']]['patient'].nunique()
+    n_original = df[~df['is_smoothed']]['patient'].nunique()
+    
+    print(f"\nDataset composition:")
+    print(f"  Total patients: {n_total}")
+    print(f"  Smoothed (kernel corrected): {n_smoothed} ({100*n_smoothed/n_total:.1f}%)")
+    print(f"  Original: {n_original} ({100*n_original/n_total:.1f}%)")
+    
+    # For parenchymal metrics, compare correlations
+    if 'type' in corr_df.columns:
+        parenchymal_metrics = corr_df[corr_df['type'] == 'parenchymal']['metric'].tolist()
+        
+        if len(parenchymal_metrics) > 0:
+            print(f"\nParenchymal metrics correlation comparison:")
+            print(f"{'Metric':<40} {'All (r)':<12} {'Original (r)':<15} {'Smoothed (r)':<15} {'Δr':<10}")
+            print("-"*95)
+            
+            sensitivity_results = []
+            
+            for metric in parenchymal_metrics:
+                if metric not in df.columns or 'Percent' not in df.columns:
+                    continue
+                
+                # All data
+                df_all = df[[metric, 'Percent']].dropna()
+                r_all, p_all = pearsonr(df_all[metric], df_all['Percent']) if len(df_all) > 10 else (np.nan, np.nan)
+                
+                # Original only
+                df_orig = df[~df['is_smoothed']][[metric, 'Percent']].dropna()
+                r_orig, p_orig = pearsonr(df_orig[metric], df_orig['Percent']) if len(df_orig) > 10 else (np.nan, np.nan)
+                
+                # Smoothed only
+                df_smooth = df[df['is_smoothed']][[metric, 'Percent']].dropna()
+                r_smooth, p_smooth = pearsonr(df_smooth[metric], df_smooth['Percent']) if len(df_smooth) > 10 else (np.nan, np.nan)
+                
+                delta_r = abs(r_all - r_orig) if not np.isnan(r_all) and not np.isnan(r_orig) else np.nan
+                
+                sensitivity_results.append({
+                    'metric': metric,
+                    'r_all': r_all,
+                    'r_original': r_orig,
+                    'r_smoothed': r_smooth,
+                    'delta_r': delta_r,
+                    'n_all': len(df_all),
+                    'n_original': len(df_orig),
+                    'n_smoothed': len(df_smooth)
+                })
+                
+                print(f"{metric:<40} {r_all:>10.3f}  {r_orig:>13.3f}  {r_smooth:>13.3f}  {delta_r:>8.3f}")
+            
+            # Summary
+            valid_deltas = [r['delta_r'] for r in sensitivity_results if not np.isnan(r['delta_r'])]
+            if len(valid_deltas) > 0:
+                mean_delta = np.mean(valid_deltas)
+                max_delta = np.max(valid_deltas)
+                print(f"\nΔr = difference between 'All' and 'Original only' correlations")
+                print(f"Mean Δr: {mean_delta:.3f} (average impact of including smoothed scans)")
+                print(f"Max Δr: {max_delta:.3f}")
+                
+                if max_delta < 0.1:
+                    print("\n✓ CONCLUSION: Smoothed scans have minimal impact on correlations (Δr < 0.1)")
+                    print("  → Safe to include in analysis")
+                elif max_delta < 0.2:
+                    print("\n⚠ CONCLUSION: Smoothed scans have moderate impact (0.1 < Δr < 0.2)")
+                    print("  → Should report sensitivity analysis in results")
+                else:
+                    print("\n⚠⚠ CONCLUSION: Smoothed scans have significant impact (Δr > 0.2)")
+                    print("  → Consider separate analysis or excluding smoothed scans")
+            
+            return pd.DataFrame(sensitivity_results)
+    
+    return None
+
+
+def compare_airway_vs_parenchymal(corr_df):
+    """Compare airway vs parenchymal metrics performance"""
+    
+    if 'type' not in corr_df.columns:
+        return
+    
+    airway_df = corr_df[corr_df['type'] == 'airway'].copy()
+    parenchymal_df = corr_df[corr_df['type'] == 'parenchymal'].copy()
+    
+    print("\n" + "="*80)
+    print("COMPARISON: AIRWAY vs PARENCHYMAL METRICS")
+    print("="*80)
+    
+    print("\nAIRWAY METRICS:")
+    print(f"  Count: {len(airway_df)}")
+    if len(airway_df) > 0:
+        print(f"  Mean |r|: {airway_df['pearson_r'].abs().mean():.3f}")
+        print(f"  Max |r|: {airway_df['pearson_r'].abs().max():.3f}")
+        print(f"  Significant (p<0.05): {len(airway_df[airway_df['pearson_p'] < 0.05])}/{len(airway_df)}")
+        best_airway = airway_df.loc[airway_df['pearson_r'].abs().idxmax()]
+        print(f"  Best: {best_airway['metric']} (r={best_airway['pearson_r']:.3f})")
+    
+    print("\nPARENCHYMAL METRICS:")
+    print(f"  Count: {len(parenchymal_df)}")
+    if len(parenchymal_df) > 0:
+        print(f"  Mean |r|: {parenchymal_df['pearson_r'].abs().mean():.3f}")
+        print(f"  Max |r|: {parenchymal_df['pearson_r'].abs().max():.3f}")
+        print(f"  Significant (p<0.05): {len(parenchymal_df[parenchymal_df['pearson_p'] < 0.05])}/{len(parenchymal_df)}")
+        best_parenchymal = parenchymal_df.loc[parenchymal_df['pearson_r'].abs().idxmax()]
+        print(f"  Best: {best_parenchymal['metric']} (r={best_parenchymal['pearson_r']:.3f})")
+    else:
+        print("  No parenchymal data available yet")
+        print("  → Run compute_parenchymal_metrics.py first to add parenchymal metrics")
+    
+    print("\n" + "="*80)
+
+
 # ============================================================
 # MAIN ANALYSIS
 # ============================================================
 
 def main():
     print("="*80)
-    print("OSIC AIRWAY METRICS vs FVC ANALYSIS")
-    print("FVC Metric Correlations + Evolution/Decline Analysis")
+    print("OSIC METRICS vs FVC PERCENT ANALYSIS")
+    print("Airway + Parenchymal Metrics")
+    print("Correlations with FVC Percent (normalized for age/sex/height)")
     print("="*80)
     
     # Load data
@@ -602,10 +799,26 @@ def main():
     reliable = load_validation_results()
     df = build_integrated_dataset(reliable, clinical)
     
+    # Check if we have parenchymal metrics
+    parenchymal_cols = [
+        'mean_lung_density_HU', 'percent_ground_glass_opacity', 
+        'percent_honeycombing', 'percent_fibrotic_patterns'
+    ]
+    has_parenchymal = any(col in df.columns and df[col].notna().any() for col in parenchymal_cols)
+    
+    if not has_parenchymal:
+        print("\n" + "!"*80)
+        print("INFO: No parenchymal metrics found (analyzing airway metrics only)")
+        print("To include parenchymal metrics, run: py compute_parenchymal_metrics.py")
+        print("!"*80)
+    else:
+        n_parenchymal = df[parenchymal_cols[0]].notna().sum()
+        print(f"\n✓ Parenchymal metrics available for {n_parenchymal} measurements")
+    
     # Save integrated dataset
     dataset_path = OUTPUT_DIR / "integrated_dataset.csv"
     df.to_csv(dataset_path, index=False)
-    print(f"\nIntegrated dataset saved to: {dataset_path}")
+    print(f"\n✓ Integrated dataset saved to: {dataset_path}")
     
     print("\n" + "="*80)
     print("DATA SUMMARY")
@@ -618,7 +831,8 @@ def main():
     
     # === PART 1: FVC vs METRIC CORRELATIONS ===
     print("="*80)
-    print("PART 1: FVC vs METRICS - OVERALL CORRELATIONS")
+    print("PART 1: METRICS vs FVC PERCENT - CORRELATION ANALYSIS")
+    print("FVC Percent = normalized for age, sex, and height")
     print("="*80)
     
     corr_df = create_all_plots(df)
@@ -628,19 +842,31 @@ def main():
     summary_plot_path = OUTPUT_DIR / "correlation_summary.png"
     plot_correlation_summary(corr_df, summary_plot_path)
     
-    corr_df_sorted = corr_df.copy()
-    corr_df_sorted['abs_pearson_r'] = corr_df_sorted['pearson_r'].abs()
-    corr_df_sorted = corr_df_sorted.sort_values('abs_pearson_r', ascending=False)
+    # Sensitivity analysis: smoothed vs original scans
+    sensitivity_df = sensitivity_analysis_smoothed(df, corr_df)
+    if sensitivity_df is not None:
+        sensitivity_path = OUTPUT_DIR / "sensitivity_analysis_smoothed.csv"
+        sensitivity_df.to_csv(sensitivity_path, index=False)
+        print(f"\n✓ Sensitivity analysis saved to: {sensitivity_path}")
     
-    print(f"\n{'Rank':<6} {'Metric':<30} {'Pearson r':<12} {'p-value':<12} {'Spearman ρ':<12}")
-    print("-"*80)
-    for i, row in enumerate(corr_df_sorted.itertuples(), 1):
+    # Compare airway vs parenchymal metrics
+    compare_airway_vs_parenchymal(corr_df)
+    
+    # Sort by correlation strength
+    corr_df['abs_pearson_r'] = corr_df['pearson_r'].abs()
+    corr_sorted = corr_df.sort_values('abs_pearson_r', ascending=False)
+    
+    # Print top correlations with type
+    print(f"\n{'Rank':<6} {'Type':<14} {'Metric':<35} {'Pearson r':<12} {'p-value':<12} {'Sig.':<6}")
+    print("-"*88)
+    for i, row in enumerate(corr_sorted.itertuples(), 1):
         sig = "***" if row.pearson_p < 0.001 else ("**" if row.pearson_p < 0.01 else ("*" if row.pearson_p < 0.05 else ""))
-        print(f"{i:<6} {row.metric:<30} {row.pearson_r:>10.4f}  {row.pearson_p:>10.4f}  {row.spearman_r:>10.4f}  {sig}")
+        metric_type = getattr(row, 'type', 'airway').upper()
+        print(f"{i:<6} {metric_type:<14} {row.metric:<35} {row.pearson_r:>10.4f}  {row.pearson_p:>10.4f}  {sig:<6}")
     
-    # === PART 2: FVC EVOLUTION + DECLINE RATE ===
+    # === PART 2: FVC PERCENT EVOLUTION + DECLINE RATE ===
     print("\n" + "="*80)
-    print("PART 2: FVC EVOLUTION & DECLINE RATE ANALYSIS")
+    print("PART 2: FVC PERCENT EVOLUTION & DECLINE RATE ANALYSIS")
     print("="*80)
     
     metrics_to_analyze = [
@@ -650,54 +876,66 @@ def main():
         ('pc_ratio', 'PC Ratio'),
         ('tapering_ratio', 'Tapering Ratio'),
         ('mean_tortuosity', 'Mean Tortuosity'),
-        ('mean_diameter', 'Mean Diameter (mm)'),
-        ('peripheral_volume_ratio', 'Peripheral Volume Ratio'),
     ]
     
-    print("\nCreating FVC evolution and decline rate plots...")
+    print("\nCreating FVC Percent evolution and decline rate plots...")
     for metric_name, metric_label in metrics_to_analyze:
         if metric_name not in df.columns:
             continue
         
-        # FVC evolution plot
+        # FVC Percent evolution plot
         evolution_path = OUTPUT_DIR / f"evolution_{metric_name}.png"
-        decline_df = plot_fvc_evolution(df, metric_name, metric_label, evolution_path)
+        decline_df = plot_percent_evolution(df, metric_name, metric_label, evolution_path)
         
         if decline_df is not None and len(decline_df) > 0:
             print(f"  {metric_name}")
             for idx, row in decline_df.iterrows():
-                print(f"      {row['quartile']}: {row['mean_decline']:.2f} ± {row['std_decline']:.2f} ml/week")
+                print(f"      {row['quartile']}: {row['mean_decline']:.2f} ± {row['std_decline']:.2f} %/week")
     
     # === FINAL SUMMARY ===
     print("\n" + "="*80)
     print("KEY FINDINGS SUMMARY")
     print("="*80)
     
-    significant = corr_df_sorted[corr_df_sorted['pearson_p'] < 0.05]
+    significant = corr_sorted[corr_sorted['pearson_p'] < 0.05]
     
-    print("\n1. METRIC-FVC CORRELATIONS (strongest):")
-    for i, row in enumerate(corr_df_sorted.head(5).itertuples(), 1):
+    print("\n1. STRONGEST CORRELATIONS (All Metrics vs FVC Percent):")
+    for i, row in enumerate(corr_sorted.head(5).itertuples(), 1):
         strength = "Strong" if abs(row.pearson_r) >= 0.5 else ("Moderate" if abs(row.pearson_r) >= 0.3 else "Weak")
         direction = "positive" if row.pearson_r > 0 else "negative"
         sig = "***" if row.pearson_p < 0.001 else ("**" if row.pearson_p < 0.01 else ("*" if row.pearson_p < 0.05 else ""))
-        print(f"   {i}. {row.metric}: r={row.pearson_r:.3f} ({strength} {direction}) {sig}")
+        metric_type = getattr(row, 'type', 'airway').upper()
+        print(f"   {i}. [{metric_type}] {row.metric}: r={row.pearson_r:.3f} ({strength} {direction}) {sig}")
     
-    print("\n2. STATISTICALLY SIGNIFICANT (p<0.05):")
+    print("\n2. STATISTICALLY SIGNIFICANT CORRELATIONS (p<0.05):")
+    print(f"   Total: {len(significant)} out of {len(corr_sorted)} metrics")
     if len(significant) > 0:
-        print(f"   Found {len(significant)} significant correlations")
-    else:
-        print("   No significant correlations found")
+        # Breakdown by type
+        if 'type' in significant.columns:
+            airway_sig = significant[significant['type'] == 'airway']
+            parench_sig = significant[significant['type'] == 'parenchymal']
+            print(f"   - Airway: {len(airway_sig)}")
+            print(f"   - Parenchymal: {len(parench_sig)}")
+        print("\n   Top significant metrics:")
+        for idx, row in significant.head(10).iterrows():
+            metric_type = row.get('type', 'airway').upper()
+            print(f"      - [{metric_type}] {row['metric']}: r={row['pearson_r']:.3f} (p={row['pearson_p']:.4f})")
+    
+    print("\n3. INTERPRETATION:")
+    print("   FVC Percent = patient FVC as % of predicted FVC for healthy person")
+    print("                 with same age, sex, and height")
+    print("   This removes confounding effects of body size and demographics")
     
     print("\n" + "="*80)
     print("ANALYSIS COMPLETE")
     print("="*80)
     print(f"\nResults saved to: {OUTPUT_DIR}")
     print(f"\nFiles generated:")
-    print(f"  - integrated_dataset.csv")
-    print(f"  - correlation_results.csv")
-    print(f"  - correlation_summary.png")
-    print(f"  - [metric]_vs_fvc.png: Scatter plots with correlations")
-    print(f"  - evolution_[metric].png: FVC evolution & decline rate")
+    print(f"  - integrated_dataset.csv: Raw data with all metrics and FVC Percent")
+    print(f"  - correlation_results.csv: Correlation coefficients for all metrics")
+    print(f"  - correlation_summary.png: Visual comparison of all correlations")
+    print(f"  - [metric]_vs_percent.png: Scatter plots (metric vs FVC Percent)")
+    print(f"  - evolution_[metric].png: FVC Percent evolution & decline rate by quartile")
     print("\n" + "="*80 + "\n")
 
 
