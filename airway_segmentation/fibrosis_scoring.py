@@ -38,14 +38,15 @@ class PulmonaryFibrosisScorer:
             'tapering_ratio': {'mean': 0.79, 'std': 0.05, 'min': 0.70, 'max': 0.88}
         }
         
-        # Scoring weights (total = 1.0)
+        # VALIDATED WEIGHTS (based on FVC correlation analysis)
+        # Updated: Jan 2026 - Evidence-based from OSIC validation study
         self.weights = {
-            'pc_ratio': 0.30,           # Most important: peripheral loss is hallmark
-            'tortuosity': 0.20,          # Distortion indicates fibrotic changes
-            'generation_coverage': 0.25, # Missing generations = severe disease
-            'symmetry': 0.10,            # Asymmetry suggests focal disease
-            'volume_distribution': 0.10,  # Abnormal distribution patterns
-            'tapering': 0.05             # Altered tapering indicates remodeling
+            'tortuosity': 0.50,          # VALIDATED (r=-0.267, p<0.001) - Strongest predictor
+            'airway_volume': 0.30,       # VALIDATED (r=+0.245, p<0.001) - Volume loss correlates with FVC
+            'pc_ratio': 0.05,            # REDUCED (r=-0.062, NS) - Weak correlation with FVC
+            'symmetry': 0.10,            # Kept for clinical relevance
+            'generation_coverage': 0.05, # Reduced importance
+            'tapering': 0.00             # REMOVED (no correlation with FVC)
         }
         
         # Initialize results

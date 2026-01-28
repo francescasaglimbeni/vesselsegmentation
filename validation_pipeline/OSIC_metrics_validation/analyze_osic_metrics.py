@@ -177,6 +177,20 @@ def build_integrated_dataset(reliable_cases, clinical_data):
                 # Advanced metrics (from JSON)
                 'total_volume_mm3': advanced.get('total_volume_mm3'),
                 'mean_tortuosity': advanced.get('mean_tortuosity'),
+                
+                # NEW: Enhanced peripheral metrics
+                'peripheral_volume_mm3': advanced.get('peripheral_volume_mm3'),
+                'peripheral_volume_percent': advanced.get('peripheral_volume_percent'),
+                'mean_peripheral_diameter_mm': advanced.get('mean_peripheral_diameter_mm'),
+                'mean_peripheral_branch_volume_mm3': advanced.get('mean_peripheral_branch_volume_mm3'),
+                'peripheral_branch_density': advanced.get('peripheral_branch_density'),
+                'central_to_peripheral_diameter_ratio': advanced.get('central_to_peripheral_diameter_ratio'),
+                'diameter_cv': advanced.get('diameter_cv'),
+                'mean_central_diameter_mm': advanced.get('mean_central_diameter_mm'),
+                
+                # Pi10 metrics (to be verified)
+                'pi10': advanced.get('pi10'),
+                'pi10_slope': advanced.get('pi10_slope'),
             }
             
             # Add Weibel-specific metrics if available
@@ -292,13 +306,28 @@ def create_all_plots(df):
     
     # Define metrics to plot (AIRWAY + PARENCHYMAL)
     metrics = [
-        # AIRWAY METRICS
+        # CORE AIRWAY METRICS
         ('volume_ml', 'Airway Volume (ml)', 'airway'),
+        ('total_volume_mm3', 'Total Volume (mm³)', 'airway'),
         ('branch_count', 'Branch Count', 'airway'),
         ('max_generation', 'Max Generation', 'airway'),
         ('pc_ratio', 'Peripheral/Central Ratio', 'airway'),
         ('tapering_ratio', 'Tapering Ratio', 'airway'),
         ('mean_tortuosity', 'Mean Tortuosity', 'airway'),
+        
+        # NEW: ENHANCED PERIPHERAL METRICS
+        ('peripheral_volume_mm3', 'Peripheral Volume (mm³)', 'airway_peripheral'),
+        ('peripheral_volume_percent', 'Peripheral Volume (%)', 'airway_peripheral'),
+        ('mean_peripheral_diameter_mm', 'Mean Peripheral Diameter (mm)', 'airway_peripheral'),
+        ('mean_peripheral_branch_volume_mm3', 'Mean Peripheral Branch Volume (mm³)', 'airway_peripheral'),
+        ('peripheral_branch_density', 'Peripheral Branch Density', 'airway_peripheral'),
+        ('central_to_peripheral_diameter_ratio', 'Central/Peripheral Diameter Ratio', 'airway_peripheral'),
+        ('diameter_cv', 'Diameter Coefficient of Variation', 'airway_peripheral'),
+        ('mean_central_diameter_mm', 'Mean Central Diameter (mm)', 'airway_peripheral'),
+        
+        # PI10 METRICS (to verify)
+        ('pi10', 'Pi10 (wall thickness proxy)', 'airway_wall'),
+        ('pi10_slope', 'Pi10 Slope', 'airway_wall'),
         
         # PARENCHYMAL METRICS
         ('mean_lung_density_HU', 'Mean Lung Density (HU)', 'parenchymal'),
@@ -333,8 +362,20 @@ def plot_correlation_summary(corr_df, output_path):
     # Create figure
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 10))
     
-    # Color by metric type (airway vs parenchymal)
-    colors = ['steelblue' if t == 'airway' else 'coral' for t in corr_df.get('type', ['airway']*len(corr_df))]
+    # Color by metric type (airway vs parenchymal vs peripheral)
+    def get_color(metric_type):
+        if metric_type == 'airway':
+            return 'steelblue'
+        elif metric_type == 'airway_peripheral':
+            return 'mediumseagreen'
+        elif metric_type == 'airway_wall':
+            return 'darkorange'
+        elif metric_type == 'parenchymal':
+            return 'coral'
+        else:
+            return 'gray'
+    
+    colors = [get_color(t) for t in corr_df.get('type', ['airway']*len(corr_df))]
     
     # Plot 1: Pearson correlation
     ax1.barh(corr_df['metric'], corr_df['pearson_r'], color=colors, alpha=0.7)
@@ -346,7 +387,9 @@ def plot_correlation_summary(corr_df, output_path):
     # Add legend
     from matplotlib.patches import Patch
     legend_elements = [
-        Patch(facecolor='steelblue', alpha=0.7, label='Airway Metrics'),
+        Patch(facecolor='steelblue', alpha=0.7, label='Core Airway Metrics'),
+        Patch(facecolor='mediumseagreen', alpha=0.7, label='Peripheral Metrics'),
+        Patch(facecolor='darkorange', alpha=0.7, label='Wall Thickness Metrics'),
         Patch(facecolor='coral', alpha=0.7, label='Parenchymal Metrics')
     ]
     ax1.legend(handles=legend_elements, loc='lower right')
@@ -731,19 +774,21 @@ def sensitivity_analysis_smoothed(df, corr_df):
 
 
 def compare_airway_vs_parenchymal(corr_df):
-    """Compare airway vs parenchymal metrics performance"""
+    """Compare airway vs peripheral vs parenchymal metrics performance"""
     
     if 'type' not in corr_df.columns:
         return
     
     airway_df = corr_df[corr_df['type'] == 'airway'].copy()
+    peripheral_df = corr_df[corr_df['type'] == 'airway_peripheral'].copy()
+    wall_df = corr_df[corr_df['type'] == 'airway_wall'].copy()
     parenchymal_df = corr_df[corr_df['type'] == 'parenchymal'].copy()
     
     print("\n" + "="*80)
-    print("COMPARISON: AIRWAY vs PARENCHYMAL METRICS")
+    print("COMPARISON: AIRWAY vs PERIPHERAL vs WALL vs PARENCHYMAL METRICS")
     print("="*80)
     
-    print("\nAIRWAY METRICS:")
+    print("\nCORE AIRWAY METRICS:")
     print(f"  Count: {len(airway_df)}")
     if len(airway_df) > 0:
         print(f"  Mean |r|: {airway_df['pearson_r'].abs().mean():.3f}")
@@ -751,6 +796,25 @@ def compare_airway_vs_parenchymal(corr_df):
         print(f"  Significant (p<0.05): {len(airway_df[airway_df['pearson_p'] < 0.05])}/{len(airway_df)}")
         best_airway = airway_df.loc[airway_df['pearson_r'].abs().idxmax()]
         print(f"  Best: {best_airway['metric']} (r={best_airway['pearson_r']:.3f})")
+    
+    print("\nPERIPHERAL AIRWAY METRICS (NEW):")
+    print(f"  Count: {len(peripheral_df)}")
+    if len(peripheral_df) > 0:
+        print(f"  Mean |r|: {peripheral_df['pearson_r'].abs().mean():.3f}")
+        print(f"  Max |r|: {peripheral_df['pearson_r'].abs().max():.3f}")
+        print(f"  Significant (p<0.05): {len(peripheral_df[peripheral_df['pearson_p'] < 0.05])}/{len(peripheral_df)}")
+        best_peripheral = peripheral_df.loc[peripheral_df['pearson_r'].abs().idxmax()]
+        print(f"  Best: {best_peripheral['metric']} (r={best_peripheral['pearson_r']:.3f})")
+    
+    print("\nWALL THICKNESS METRICS:")
+    print(f"  Count: {len(wall_df)}")
+    if len(wall_df) > 0:
+        print(f"  Mean |r|: {wall_df['pearson_r'].abs().mean():.3f}")
+        print(f"  Max |r|: {wall_df['pearson_r'].abs().max():.3f}")
+        print(f"  Significant (p<0.05): {len(wall_df[wall_df['pearson_p'] < 0.05])}/{len(wall_df)}")
+        best_wall = wall_df.loc[wall_df['pearson_r'].abs().idxmax()]
+        print(f"  Best: {best_wall['metric']} (r={best_wall['pearson_r']:.3f})")
+        print(f"  ⚠️ WARNING: Pi10/PiSlope calculation should be verified against paper definition!")
     
     print("\nPARENCHYMAL METRICS:")
     print(f"  Count: {len(parenchymal_df)}")
@@ -763,6 +827,117 @@ def compare_airway_vs_parenchymal(corr_df):
     else:
         print("  No parenchymal data available yet")
         print("  → Run compute_parenchymal_metrics.py first to add parenchymal metrics")
+    
+    # Summary comparison
+    print("\n" + "="*80)
+    print("KEY INSIGHTS:")
+    print("="*80)
+    
+    all_metrics = []
+    if len(airway_df) > 0:
+        all_metrics.append(('Core Airway', airway_df['pearson_r'].abs().mean()))
+    if len(peripheral_df) > 0:
+        all_metrics.append(('Peripheral', peripheral_df['pearson_r'].abs().mean()))
+    if len(wall_df) > 0:
+        all_metrics.append(('Wall Thickness', wall_df['pearson_r'].abs().mean()))
+    if len(parenchymal_df) > 0:
+        all_metrics.append(('Parenchymal', parenchymal_df['pearson_r'].abs().mean()))
+    
+    if all_metrics:
+        all_metrics.sort(key=lambda x: x[1], reverse=True)
+        print(f"\nMean |r| ranking:")
+        for i, (name, mean_r) in enumerate(all_metrics, 1):
+            print(f"  {i}. {name}: {mean_r:.3f}")
+    
+    print("\n" + "="*80)
+
+
+def analyze_pc_ratio_problem(df):
+    """
+    Analizza perché PC ratio ha bassa correlazione nonostante sia teoricamente importante
+    """
+    print("\n" + "="*80)
+    print("SPECIAL ANALYSIS: WHY IS PC RATIO CORRELATION LOW?")
+    print("="*80)
+    
+    if 'pc_ratio' not in df.columns or 'Percent' not in df.columns:
+        print("  PC ratio or FVC% not available")
+        return
+    
+    # Baseline data only (week 0)
+    baseline = df[df['week'] == 0].copy()
+    
+    if len(baseline) == 0:
+        print("  No baseline (week 0) data available")
+        return
+    
+    # Statistics
+    pc_clean = baseline['pc_ratio'].dropna()
+    fvc_clean = baseline['Percent'].dropna()
+    
+    print(f"\nBaseline (Week 0) Statistics:")
+    print(f"  Patients: {len(baseline)}")
+    print(f"\nPC Ratio distribution:")
+    print(f"  Mean: {pc_clean.mean():.3f}")
+    print(f"  Median: {pc_clean.median():.3f}")
+    print(f"  Std: {pc_clean.std():.3f}")
+    print(f"  Range: {pc_clean.min():.3f} - {pc_clean.max():.3f}")
+    print(f"  CV: {pc_clean.std() / pc_clean.mean():.3f}")
+    
+    print(f"\nFVC% distribution:")
+    print(f"  Mean: {fvc_clean.mean():.1f}%")
+    print(f"  Median: {fvc_clean.median():.1f}%")
+    print(f"  Range: {fvc_clean.min():.1f}% - {fvc_clean.max():.1f}%")
+    
+    # Check for restricted range
+    if pc_clean.std() / pc_clean.mean() < 0.3:
+        print(f"\n⚠️ PROBLEM IDENTIFIED: Low variability in PC ratio (CV < 0.3)")
+        print(f"   → In advanced fibrosis, all patients have low PC ratio")
+        print(f"   → Limited dynamic range reduces correlation power")
+    
+    # Compare with volume metrics
+    if 'total_volume_mm3' in baseline.columns and 'peripheral_volume_mm3' in baseline.columns:
+        vol_clean = baseline[['total_volume_mm3', 'peripheral_volume_mm3', 'Percent', 'pc_ratio']].dropna()
+        
+        if len(vol_clean) > 10:
+            # Correlations
+            r_total_fvc, p_total = pearsonr(vol_clean['total_volume_mm3'], vol_clean['Percent'])
+            r_periph_fvc, p_periph = pearsonr(vol_clean['peripheral_volume_mm3'], vol_clean['Percent'])
+            r_pc_fvc, p_pc = pearsonr(vol_clean['pc_ratio'], vol_clean['Percent'])
+            
+            print(f"\n" + "-"*80)
+            print("COMPARISON: Ratio vs Absolute Volumes")
+            print("-"*80)
+            print(f"  Total volume vs FVC%:      r={r_total_fvc:.3f}, p={p_total:.4f}")
+            print(f"  Peripheral volume vs FVC%: r={r_periph_fvc:.3f}, p={p_periph:.4f}")
+            print(f"  PC ratio vs FVC%:          r={r_pc_fvc:.3f}, p={p_pc:.4f}")
+            
+            if abs(r_total_fvc) > abs(r_pc_fvc) * 1.5:
+                print(f"\n💡 INSIGHT: Total volume has {abs(r_total_fvc)/abs(r_pc_fvc):.1f}x stronger correlation!")
+                print(f"   → Absolute volume loss is better predictor than ratio")
+                print(f"   → Fibrosis affects both central AND peripheral airways")
+    
+    # Test normalization
+    if 'total_volume_mm3' in baseline.columns:
+        baseline_test = baseline[['pc_ratio', 'total_volume_mm3', 'Percent']].dropna()
+        
+        if len(baseline_test) > 10:
+            # Normalize PC ratio by total volume
+            baseline_test['pc_ratio_normalized'] = baseline_test['pc_ratio'] * baseline_test['total_volume_mm3'] / 20000  # 20000 mm³ = typical normal
+            
+            r_norm, p_norm = pearsonr(baseline_test['pc_ratio_normalized'], baseline_test['Percent'])
+            r_orig, p_orig = pearsonr(baseline_test['pc_ratio'], baseline_test['Percent'])
+            
+            print(f"\n" + "-"*80)
+            print("NORMALIZATION TEST:")
+            print("-"*80)
+            print(f"  Original PC ratio:    r={r_orig:.3f}, p={p_orig:.4f}")
+            print(f"  Normalized PC ratio:  r={r_norm:.3f}, p={p_norm:.4f}")
+            
+            if abs(r_norm) > abs(r_orig) * 1.2:
+                print(f"  ✓ Normalization improves correlation by {abs(r_norm)/abs(r_orig):.1f}x")
+            else:
+                print(f"  → Normalization doesn't help significantly")
     
     print("\n" + "="*80)
 
@@ -834,6 +1009,9 @@ def main():
     
     # Compare airway vs parenchymal metrics
     compare_airway_vs_parenchymal(corr_df)
+    
+    # Special analysis for PC ratio (understand why it has low correlation)
+    analyze_pc_ratio_problem(df)
     
     # Sort by correlation strength
     corr_df['abs_pearson_r'] = corr_df['pearson_r'].abs()

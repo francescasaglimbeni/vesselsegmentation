@@ -1249,6 +1249,63 @@ class AirwayGraphAnalyzer:
             print(f"  ✓ Normal P/C ratio range")
         
         # ================================================================
+        # METRIC 2b: NEW PERIPHERAL METRICS (for FVC correlation)
+        # ================================================================
+        print("\n[Metric 2b] Enhanced Peripheral Metrics...")
+        
+        # Percentuale volume periferico sul totale
+        metrics['peripheral_volume_percent'] = (peripheral_volume / metrics['total_volume_mm3'] * 100) if metrics['total_volume_mm3'] > 0 else 0
+        
+        # Media diametri periferici (gen >10)
+        if len(peripheral_branches) > 0 and 'diameter_mean_mm' in peripheral_branches.columns:
+            metrics['mean_peripheral_diameter_mm'] = peripheral_branches['diameter_mean_mm'].mean()
+            metrics['median_peripheral_diameter_mm'] = peripheral_branches['diameter_mean_mm'].median()
+            metrics['std_peripheral_diameter_mm'] = peripheral_branches['diameter_mean_mm'].std()
+        else:
+            metrics['mean_peripheral_diameter_mm'] = np.nan
+            metrics['median_peripheral_diameter_mm'] = np.nan
+            metrics['std_peripheral_diameter_mm'] = np.nan
+        
+        # Media volumi branches periferici
+        if len(peripheral_branches) > 0:
+            metrics['mean_peripheral_branch_volume_mm3'] = peripheral_branches['volume_mm3'].mean()
+            metrics['median_peripheral_branch_volume_mm3'] = peripheral_branches['volume_mm3'].median()
+        else:
+            metrics['mean_peripheral_branch_volume_mm3'] = np.nan
+            metrics['median_peripheral_branch_volume_mm3'] = np.nan
+        
+        # Densità periferica (branches per unità di volume)
+        metrics['peripheral_branch_density'] = len(peripheral_branches) / peripheral_volume if peripheral_volume > 0 else 0
+        
+        # Ratio diametro centrale/periferico
+        if len(central_branches) > 0 and 'diameter_mean_mm' in central_branches.columns and not np.isnan(metrics['mean_peripheral_diameter_mm']):
+            mean_central_diameter = central_branches['diameter_mean_mm'].mean()
+            metrics['mean_central_diameter_mm'] = mean_central_diameter
+            metrics['central_to_peripheral_diameter_ratio'] = mean_central_diameter / metrics['mean_peripheral_diameter_mm'] if metrics['mean_peripheral_diameter_mm'] > 0 else np.nan
+        else:
+            metrics['mean_central_diameter_mm'] = np.nan
+            metrics['central_to_peripheral_diameter_ratio'] = np.nan
+        
+        # Coefficient of variation diametri (tutta l'albero)
+        if 'diameter_mean_mm' in self.branch_metrics_df.columns:
+            all_diameters = self.branch_metrics_df['diameter_mean_mm'].dropna()
+            if len(all_diameters) > 0:
+                metrics['diameter_cv'] = all_diameters.std() / all_diameters.mean() if all_diameters.mean() > 0 else np.nan
+                metrics['diameter_mean_all'] = all_diameters.mean()
+                metrics['diameter_std_all'] = all_diameters.std()
+            else:
+                metrics['diameter_cv'] = np.nan
+                metrics['diameter_mean_all'] = np.nan
+                metrics['diameter_std_all'] = np.nan
+        
+        print(f"  Peripheral volume %: {metrics['peripheral_volume_percent']:.2f}%")
+        print(f"  Mean peripheral diameter: {metrics['mean_peripheral_diameter_mm']:.3f} mm")
+        print(f"  Mean peripheral branch volume: {metrics['mean_peripheral_branch_volume_mm3']:.2f} mm³")
+        print(f"  Peripheral branch density: {metrics['peripheral_branch_density']:.4f} branches/mm³")
+        print(f"  Central/Peripheral diameter ratio: {metrics['central_to_peripheral_diameter_ratio']:.3f}")
+        print(f"  Diameter CV (all airways): {metrics['diameter_cv']:.3f}")
+        
+        # ================================================================
         # METRIC 3: Airway Tortuosity
         # ================================================================
         print("\n[Metric 3] Airway Tortuosity Analysis...")
