@@ -1323,8 +1323,8 @@ def analyze_fvc_evolution_by_metric(df, metric_name, metric_label, output_path):
         else:
             print(f"  → Non predittivo di progressione")
     
-    # Visualization
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    # Visualization - ONLY 2 PLOTS (most important)
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
     
     colors = ['#c0392b', '#e67e22', '#f39c12', '#2ecc71']
     
@@ -1367,24 +1367,6 @@ def analyze_fvc_evolution_by_metric(df, metric_name, metric_label, output_path):
     ax2.set_title('Mean Decline Rate by Baseline Quartile', fontsize=13, fontweight='bold')
     ax2.legend(loc='best', fontsize=9)
     ax2.grid(True, alpha=0.3, axis='y')
-    
-    # Plot 3: Patient status distribution
-    ax3 = axes[2]
-    width = 0.6
-    declining = decline_df['declining_count'].values
-    stable = decline_df['stable_count'].values
-    improving = decline_df['improving_count'].values
-    
-    ax3.bar(x_pos, declining, width, label='Declining (>0.5%/wk)', color='#e74c3c', edgecolor='black')
-    ax3.bar(x_pos, stable, width, bottom=declining, label='Stable (±0.5%/wk)', color='#f39c12', edgecolor='black')
-    ax3.bar(x_pos, improving, width, bottom=declining+stable, label='Improving (>0.5%/wk)', color='#2ecc71', edgecolor='black')
-    
-    ax3.set_xticks(x_pos)
-    ax3.set_xticklabels(decline_df['quartile'], rotation=45, ha='right')
-    ax3.set_ylabel('Number of Patients', fontsize=12)
-    ax3.set_title('Patient Status Distribution', fontsize=13, fontweight='bold')
-    ax3.legend(loc='best', fontsize=9)
-    ax3.grid(True, alpha=0.3, axis='y')
     
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
