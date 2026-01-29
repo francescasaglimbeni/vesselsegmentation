@@ -12,3 +12,5 @@ validation_pipeline/venv_val/
 validation_pipeline/output/
 OSIC/OSIC_final/
 validation_pipeline/score_validation
+validation_pipeline/OSIC_metrics_validation/venv
+validation_pipeline/OSIC_metrics_validation/results_analysis

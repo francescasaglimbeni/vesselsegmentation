@@ -38,22 +38,58 @@ class PulmonaryFibrosisScorer:
             'tapering_ratio': {'mean': 0.79, 'std': 0.05, 'min': 0.70, 'max': 0.88}
         }
         
-        # VALIDATED WEIGHTS (based on FVC correlation analysis)
-        # Updated: Jan 2026 - Evidence-based from OSIC validation study
-        self.weights = {
-            'tortuosity': 0.50,          # VALIDATED (r=-0.267, p<0.001) - Strongest predictor
-            'airway_volume': 0.30,       # VALIDATED (r=+0.245, p<0.001) - Volume loss correlates with FVC
-            'pc_ratio': 0.05,            # REDUCED (r=-0.062, NS) - Weak correlation with FVC
-            'symmetry': 0.10,            # Kept for clinical relevance
-            'generation_coverage': 0.05, # Reduced importance
-            'tapering': 0.00             # REMOVED (no correlation with FVC)
+        # DUAL SCORING SYSTEM:
+        # - AIRWAY_ONLY: Pure airway morphometry (Opzione 1)
+        # - COMBINED: Airway + Parenchymal (Opzione 2) - RECOMMENDED
+        
+        # AIRWAY_ONLY WEIGHTS (Opzione 1)
+        # Updated: Jan 29, 2026 - Focus on peripheral airway metrics
+        self.weights_airway_only = {
+            'peripheral_density': 0.35,  # peripheral_branch_density (r=-0.464***)
+            'peripheral_volume': 0.25,   # peripheral metrics (r=0.414-0.467***)
+            'pc_ratio': 0.20,            # P/C ratio (r=0.130*)
+            'tortuosity': 0.15,          # tortuosity (r=-0.228**)
+            'symmetry': 0.05,            # symmetry
         }
+        
+        # COMBINED WEIGHTS (Opzione 2) - RECOMMENDED
+        # Includes parenchymal metrics (strongest FVC correlations)
+        self.weights_combined = {
+            # Parenchymal (60% - strongest predictors)
+            'parenchymal_entropy': 0.35,     # histogram_entropy (r=-0.686***)
+            'parenchymal_density': 0.25,     # mean_lung_density_HU (r=-0.648***)
+            
+            # Airway peripheral (35%)
+            'peripheral_density': 0.15,      # peripheral_branch_density (r=-0.464***)
+            'peripheral_volume': 0.15,       # peripheral metrics (r=0.414-0.467***)
+            
+            # Other airway (5%)
+            'tortuosity': 0.05,              # tortuosity (r=-0.228**)
+            'symmetry': 0.05,                # symmetry
+        }
+        
+        # Default to airway_only for backward compatibility
+        self.weights = self.weights_airway_only
         
         # Initialize results
         self.component_scores = {}
+        
+        # Dual scoring results
+        self.fibrosis_score_airway_only = None
+        self.severity_stage_airway_only = None
+        self.confidence_airway_only = None
+        
+        self.fibrosis_score_combined = None
+        self.severity_stage_combined = None
+        self.confidence_combined = None
+        
+        # Backward compatibility
         self.fibrosis_score = None
         self.severity_stage = None
         self.confidence = None
+        
+        # Parenchymal metrics (to be loaded separately)
+        self.parenchymal_metrics = None
         
     def compute_pc_ratio_score(self):
         """
@@ -236,6 +272,64 @@ class PulmonaryFibrosisScorer:
             'missing_count': len(missing_gens),
             'interpretation': interpretation,
             'reference_range': (ref['min'], ref['max'])
+        }
+    
+    def compute_airway_volume_score(self):
+        """
+        Score based on total airway volume.
+        Higher volume = better preserved airways = lower fibrosis score.
+        VALIDATED: r=+0.245, p<0.001 with FVC
+        """
+        if self.verbose:
+            print("\n[3b/6] Computing Airway Volume Score...")
+        
+        if not hasattr(self.analyzer, 'advanced_metrics'):
+            raise ValueError("Run analyzer.compute_advanced_metrics() first")
+        
+        metrics = self.analyzer.advanced_metrics
+        volume = metrics.get('total_volume_mm3', np.nan)
+        
+        if np.isnan(volume):
+            if self.verbose:
+                print("  ⚠ Volume not available")
+            return {'raw_score': 5.0, 'value': np.nan, 'interpretation': 'Unknown'}
+        
+        # Reference values (approximate from healthy lungs)
+        # Healthy adult: ~20,000-40,000 mm³ of visible airways
+        # Fibrotic lung: <15,000 mm³
+        
+        if volume > 30000:
+            score = 0.0
+            interpretation = "Excellent airway volume - well preserved"
+        elif volume > 20000:
+            # Linear 20k-30k -> 0-3
+            score = 3.0 * (30000 - volume) / 10000
+            interpretation = "Good airway volume"
+        elif volume > 15000:
+            # Linear 15k-20k -> 3-6
+            score = 3.0 + 3.0 * (20000 - volume) / 5000
+            interpretation = "Moderate airway volume reduction"
+        elif volume > 10000:
+            # Linear 10k-15k -> 6-8
+            score = 6.0 + 2.0 * (15000 - volume) / 5000
+            interpretation = "Significant airway volume loss"
+        else:
+            # <10k -> 8-10
+            score = 8.0 + min(2.0, (10000 - volume) / 5000)
+            interpretation = "Severe airway volume loss"
+        
+        score = min(10.0, max(0.0, score))
+        
+        if self.verbose:
+            print(f"  Total Volume: {volume:.2f} mm³")
+            print(f"  Score: {score:.1f}/10")
+            print(f"  {interpretation}")
+        
+        return {
+            'raw_score': score,
+            'value': volume,
+            'interpretation': interpretation,
+            'reference_range': (15000, 30000)
         }
     
     def compute_symmetry_score(self):
@@ -462,72 +556,428 @@ class PulmonaryFibrosisScorer:
             'reference': weibel_theoretical
         }
     
-    def compute_overall_score(self):
+    def compute_peripheral_density_score(self):
+        """
+        Score based on peripheral branch density (branches per mm³).
+        Lower density = more peripheral loss = higher fibrosis score.
+        HIGHLY CORRELATED with FVC% (r=-0.464, p<0.001)
+        """
+        if self.verbose:
+            print("\n[7/9] Computing Peripheral Branch Density Score...")
+        
+        if not hasattr(self.analyzer, 'advanced_metrics'):
+            raise ValueError("Run analyzer.compute_advanced_metrics() first")
+        
+        metrics = self.analyzer.advanced_metrics
+        density = metrics.get('peripheral_branch_density', np.nan)
+        
+        if np.isnan(density):
+            if self.verbose:
+                print("  ⚠ Peripheral density not available")
+            return {'raw_score': 5.0, 'value': np.nan, 'interpretation': 'Unknown'}
+        
+        # Reference: healthy range approximately 0.08-0.15 branches/mm³
+        # Lower values indicate peripheral airway loss
+        
+        if density < 0.03:
+            score = 10.0
+            interpretation = "Severe peripheral airway loss"
+        elif density < 0.05:
+            score = 7.0 + (0.05 - density) / 0.02 * 3.0
+            interpretation = "Moderate to severe peripheral loss"
+        elif density < 0.08:
+            score = 4.0 + (0.08 - density) / 0.03 * 3.0
+            interpretation = "Mild peripheral airway loss"
+        elif density <= 0.15:
+            score = max(0.0, 4.0 - (density - 0.08) / 0.07 * 4.0)
+            interpretation = "Within normal range"
+        else:
+            score = 0.0
+            interpretation = "Excellent peripheral preservation"
+        
+        if self.verbose:
+            print(f"  Peripheral branch density: {density:.4f} branches/mm³")
+            print(f"  Score: {score:.1f}/10")
+            print(f"  {interpretation}")
+        
+        return {
+            'raw_score': score,
+            'value': density,
+            'interpretation': interpretation
+        }
+    
+    def compute_peripheral_volume_score(self):
+        """
+        Score based on peripheral airway metrics (volume, diameter, branch volume).
+        Combined metric representing peripheral airway health.
+        HIGHLY CORRELATED with FVC% (mean_peripheral_diameter: r=0.413, 
+        mean_peripheral_branch_volume: r=0.467)
+        """
+        if self.verbose:
+            print("\n[8/9] Computing Peripheral Volume/Diameter Score...")
+        
+        if not hasattr(self.analyzer, 'advanced_metrics'):
+            raise ValueError("Run analyzer.compute_advanced_metrics() first")
+        
+        metrics = self.analyzer.advanced_metrics
+        
+        # Get peripheral metrics
+        periph_diam = metrics.get('mean_peripheral_diameter_mm', np.nan)
+        periph_vol = metrics.get('mean_peripheral_branch_volume_mm3', np.nan)
+        periph_pct = metrics.get('peripheral_volume_percent', np.nan)
+        
+        scores = []
+        details = []
+        
+        # Score 1: Peripheral diameter
+        if not np.isnan(periph_diam):
+            # Reference: healthy peripheral diameter ~2.5-3.5 mm
+            if periph_diam < 1.5:
+                diam_score = 10.0
+                details.append("Severe diameter reduction")
+            elif periph_diam < 2.0:
+                diam_score = 6.0 + (2.0 - periph_diam) / 0.5 * 4.0
+                details.append("Moderate diameter reduction")
+            elif periph_diam < 2.5:
+                diam_score = 3.0 + (2.5 - periph_diam) / 0.5 * 3.0
+                details.append("Mild diameter reduction")
+            else:
+                diam_score = max(0.0, 3.0 - (periph_diam - 2.5) / 1.0 * 3.0)
+                details.append("Normal diameter")
+            scores.append(diam_score)
+        
+        # Score 2: Peripheral branch volume
+        if not np.isnan(periph_vol):
+            # Reference: healthy peripheral branch volume ~30-60 mm³
+            if periph_vol < 10:
+                vol_score = 10.0
+                details.append("Severe volume loss")
+            elif periph_vol < 20:
+                vol_score = 6.0 + (20 - periph_vol) / 10 * 4.0
+                details.append("Moderate volume loss")
+            elif periph_vol < 30:
+                vol_score = 3.0 + (30 - periph_vol) / 10 * 3.0
+                details.append("Mild volume reduction")
+            else:
+                vol_score = max(0.0, 3.0 - (periph_vol - 30) / 30 * 3.0)
+                details.append("Good volume")
+            scores.append(vol_score)
+        
+        # Score 3: Peripheral volume percent
+        if not np.isnan(periph_pct):
+            # Reference: peripheral should be ~20-30% of total
+            if periph_pct < 10:
+                pct_score = 10.0
+            elif periph_pct < 15:
+                pct_score = 6.0 + (15 - periph_pct) / 5 * 4.0
+            elif periph_pct < 20:
+                pct_score = 3.0 + (20 - periph_pct) / 5 * 3.0
+            else:
+                pct_score = max(0.0, 3.0 - (periph_pct - 20) / 10 * 3.0)
+            scores.append(pct_score)
+        
+        if len(scores) == 0:
+            if self.verbose:
+                print("  ⚠ No peripheral volume metrics available")
+            return {'raw_score': 5.0, 'value': np.nan, 'interpretation': 'Unknown'}
+        
+        # Average the available scores
+        final_score = np.mean(scores)
+        interpretation = "; ".join(details) if details else "Unknown"
+        
+        if self.verbose:
+            print(f"  Mean peripheral diameter: {periph_diam:.2f} mm")
+            print(f"  Mean peripheral branch volume: {periph_vol:.2f} mm³")
+            print(f"  Peripheral volume %: {periph_pct:.1f}%")
+            print(f"  Score: {final_score:.1f}/10")
+            print(f"  {interpretation}")
+        
+        return {
+            'raw_score': final_score,
+            'value': {
+                'diameter': periph_diam,
+                'branch_volume': periph_vol,
+                'volume_percent': periph_pct
+            },
+            'interpretation': interpretation
+        }
+    
+    def load_parenchymal_metrics(self, parenchymal_data):
+        """
+        Load parenchymal metrics from external source.
+        
+        Args:
+            parenchymal_data: Dict with keys 'mean_lung_density_HU', 'histogram_entropy'
+        """
+        self.parenchymal_metrics = parenchymal_data
+        if self.verbose:
+            print(f"\n✓ Parenchymal metrics loaded:")
+            print(f"  Mean lung density: {parenchymal_data.get('mean_lung_density_HU', 'N/A')} HU")
+            print(f"  Histogram entropy: {parenchymal_data.get('histogram_entropy', 'N/A')}")
+    
+    def compute_parenchymal_entropy_score(self):
+        """
+        Score based on histogram entropy (texture heterogeneity).
+        Higher entropy = more texture heterogeneity = higher fibrosis score.
+        HIGHLY CORRELATED with FVC% (r=-0.686, p<0.001)
+        """
+        if self.verbose:
+            print("\n[9/11] Computing Parenchymal Entropy Score...")
+        
+        if self.parenchymal_metrics is None:
+            if self.verbose:
+                print("  ⚠ Parenchymal metrics not loaded")
+            return {'raw_score': 5.0, 'value': np.nan, 'interpretation': 'Not available'}
+        
+        entropy = self.parenchymal_metrics.get('histogram_entropy', np.nan)
+        
+        if np.isnan(entropy):
+            if self.verbose:
+                print("  ⚠ Histogram entropy not available")
+            return {'raw_score': 5.0, 'value': np.nan, 'interpretation': 'Unknown'}
+        
+        # Reference: healthy lung entropy typically 4.0-5.5
+        # Fibrotic lungs show increased heterogeneity (higher entropy): 5.5-7.0+
+        
+        if entropy < 4.0:
+            score = 0.0
+            interpretation = "Very homogeneous (unusual)"
+        elif entropy < 5.0:
+            score = max(0.0, (5.0 - entropy) / 1.0 * 2.0)
+            interpretation = "Normal homogeneity"
+        elif entropy < 5.5:
+            score = 2.0 + (entropy - 5.0) / 0.5 * 2.0
+            interpretation = "Mild texture heterogeneity"
+        elif entropy < 6.0:
+            score = 4.0 + (entropy - 5.5) / 0.5 * 2.0
+            interpretation = "Moderate texture heterogeneity"
+        elif entropy < 6.5:
+            score = 6.0 + (entropy - 6.0) / 0.5 * 2.0
+            interpretation = "Marked texture heterogeneity"
+        else:
+            score = 8.0 + min(2.0, (entropy - 6.5) / 0.5 * 2.0)
+            interpretation = "Severe texture heterogeneity"
+        
+        if self.verbose:
+            print(f"  Histogram entropy: {entropy:.3f}")
+            print(f"  Score: {score:.1f}/10")
+            print(f"  {interpretation}")
+        
+        return {
+            'raw_score': score,
+            'value': entropy,
+            'interpretation': interpretation
+        }
+    
+    def compute_parenchymal_density_score(self):
+        """
+        Score based on mean lung density (HU).
+        Higher density (less negative HU) = more fibrosis = higher score.
+        HIGHLY CORRELATED with FVC% (r=-0.648, p<0.001)
+        """
+        if self.verbose:
+            print("\n[10/11] Computing Parenchymal Density Score...")
+        
+        if self.parenchymal_metrics is None:
+            if self.verbose:
+                print("  ⚠ Parenchymal metrics not loaded")
+            return {'raw_score': 5.0, 'value': np.nan, 'interpretation': 'Not available'}
+        
+        density = self.parenchymal_metrics.get('mean_lung_density_HU', np.nan)
+        
+        if np.isnan(density):
+            if self.verbose:
+                print("  ⚠ Mean lung density not available")
+            return {'raw_score': 5.0, 'value': np.nan, 'interpretation': 'Unknown'}
+        
+        # Reference: healthy lung density typically -850 to -750 HU
+        # Fibrotic lungs: -750 to -600 HU (higher = more dense = more fibrosis)
+        
+        if density < -900:
+            score = 0.0
+            interpretation = "Very low density (emphysematous)"
+        elif density < -850:
+            score = max(0.0, (-850 - density) / 50 * 1.0)
+            interpretation = "Low density"
+        elif density < -750:
+            score = 1.0 + (-750 - density) / 100 * 2.0
+            interpretation = "Normal density"
+        elif density < -700:
+            score = 3.0 + (-700 - density) / 50 * 2.0
+            interpretation = "Mildly increased density"
+        elif density < -650:
+            score = 5.0 + (-650 - density) / 50 * 2.0
+            interpretation = "Moderately increased density"
+        elif density < -600:
+            score = 7.0 + (-600 - density) / 50 * 2.0
+            interpretation = "Markedly increased density"
+        else:
+            score = 9.0 + min(1.0, (-600 - density) / 50)
+            interpretation = "Severe parenchymal density increase"
+        
+        if self.verbose:
+            print(f"  Mean lung density: {density:.1f} HU")
+            print(f"  Score: {score:.1f}/10")
+            print(f"  {interpretation}")
+        
+        return {
+            'raw_score': score,
+            'value': density,
+            'interpretation': interpretation
+        }
+    
+    def compute_overall_score(self, score_type='airway_only'):
         """
         Computes overall fibrosis score by combining all components.
+        
+        Args:
+            score_type: 'airway_only', 'combined', or 'both'
         """
         if self.verbose:
             print("\n" + "="*70)
             print("COMPUTING OVERALL FIBROSIS SCORE")
+            if score_type == 'both':
+                print("Computing BOTH airway_only and combined scores")
+            else:
+                print(f"Score type: {score_type.upper()}")
             print("="*70)
         
         # Compute all component scores
         self.component_scores = {
+            'peripheral_density': self.compute_peripheral_density_score(),
+            'peripheral_volume': self.compute_peripheral_volume_score(),
             'pc_ratio': self.compute_pc_ratio_score(),
             'tortuosity': self.compute_tortuosity_score(),
-            'generation_coverage': self.compute_generation_coverage_score(),
             'symmetry': self.compute_symmetry_score(),
+            'airway_volume': self.compute_airway_volume_score(),
+            'generation_coverage': self.compute_generation_coverage_score(),
             'volume_distribution': self.compute_volume_distribution_score(),
             'tapering': self.compute_tapering_score()
         }
         
-        # Weighted sum
-        total_score = 0.0
-        available_weight = 0.0
+        # Add parenchymal scores if available
+        if self.parenchymal_metrics is not None:
+            self.component_scores['parenchymal_entropy'] = self.compute_parenchymal_entropy_score()
+            self.component_scores['parenchymal_density'] = self.compute_parenchymal_density_score()
         
-        for component, weight in self.weights.items():
-            comp_data = self.component_scores[component]
-            raw_score = comp_data.get('raw_score', 5.0)
+        # Determine which scores to compute
+        compute_airway = score_type in ['airway_only', 'both']
+        compute_combined = score_type in ['combined', 'both']
+        
+        # AIRWAY_ONLY SCORE
+        if compute_airway:
+            total_score = 0.0
+            available_weight = 0.0
             
-            # Only include if we have valid data
-            if not np.isnan(comp_data.get('value', np.nan)) or component == 'volume_distribution':
-                total_score += raw_score * weight
-                available_weight += weight
-        
-        # Normalize to 0-100 scale
-        if available_weight > 0:
-            self.fibrosis_score = (total_score / available_weight) * 10.0  # Scale to 0-100
-        else:
-            self.fibrosis_score = 50.0  # Default if no data
-        
-        # Determine severity stage
-        self.severity_stage = self._classify_severity(self.fibrosis_score)
-        
-        # Compute confidence based on data availability
-        self.confidence = available_weight  # 0-1 scale
-        
-        if self.verbose:
-            print(f"\n{'='*70}")
-            print("OVERALL FIBROSIS ASSESSMENT")
-            print(f"{'='*70}")
-            print(f"\nFibrosis Score: {self.fibrosis_score:.1f}/100")
-            print(f"Severity Stage: {self.severity_stage}")
-            print(f"Confidence: {self.confidence:.0%}")
-            
-            print(f"\n{'='*70}")
-            print("COMPONENT BREAKDOWN")
-            print(f"{'='*70}")
-            
-            for component, weight in self.weights.items():
-                comp_data = self.component_scores[component]
-                raw_score = comp_data.get('raw_score', 5.0)
-                weighted_score = raw_score * weight * 10.0  # Scale to contribution
+            for component, weight in self.weights_airway_only.items():
+                if weight == 0.0:
+                    continue
                 
-                print(f"\n{component.replace('_', ' ').title()}:")
-                print(f"  Weight: {weight:.0%}")
-                print(f"  Raw score: {raw_score:.1f}/10")
-                print(f"  Contribution: {weighted_score:.1f} points")
-                print(f"  {comp_data.get('interpretation', 'N/A')}")
+                comp_data = self.component_scores.get(component)
+                if comp_data is None:
+                    continue
+                
+                raw_score = comp_data.get('raw_score', 5.0)
+                value = comp_data.get('value', np.nan)
+                
+                # Check if we have valid data
+                is_valid = False
+                if isinstance(value, dict):
+                    is_valid = any(not np.isnan(v) for v in value.values() if isinstance(v, (int, float)))
+                else:
+                    is_valid = not np.isnan(value)
+                
+                if is_valid or component == 'volume_distribution':
+                    total_score += raw_score * weight
+                    available_weight += weight
+            
+            # Normalize to 0-100 scale
+            if available_weight > 0:
+                self.fibrosis_score_airway_only = (total_score / available_weight) * 10.0
+            else:
+                self.fibrosis_score_airway_only = 50.0
+            
+            self.severity_stage_airway_only = self._classify_severity(self.fibrosis_score_airway_only)
+            self.confidence_airway_only = available_weight
+            
+            if self.verbose:
+                print(f"\n{'='*70}")
+                print("AIRWAY-ONLY SCORE (Opzione 1)")
+                print(f"{'='*70}")
+                print(f"Fibrosis Score: {self.fibrosis_score_airway_only:.1f}/100")
+                print(f"Severity Stage: {self.severity_stage_airway_only}")
+                print(f"Confidence: {self.confidence_airway_only:.0%}")
+        
+        # COMBINED SCORE
+        if compute_combined:
+            if self.parenchymal_metrics is None:
+                if self.verbose:
+                    print(f"\n⚠ Cannot compute COMBINED score: parenchymal metrics not loaded")
+                self.fibrosis_score_combined = None
+                self.severity_stage_combined = None
+                self.confidence_combined = None
+            else:
+                total_score = 0.0
+                available_weight = 0.0
+                
+                for component, weight in self.weights_combined.items():
+                    if weight == 0.0:
+                        continue
+                    
+                    comp_data = self.component_scores.get(component)
+                    if comp_data is None:
+                        continue
+                    
+                    raw_score = comp_data.get('raw_score', 5.0)
+                    value = comp_data.get('value', np.nan)
+                    
+                    # Check if we have valid data
+                    is_valid = False
+                    if isinstance(value, dict):
+                        is_valid = any(not np.isnan(v) for v in value.values() if isinstance(v, (int, float)))
+                    else:
+                        is_valid = not np.isnan(value)
+                    
+                    if is_valid or component == 'volume_distribution':
+                        total_score += raw_score * weight
+                        available_weight += weight
+                
+                # Normalize to 0-100 scale
+                if available_weight > 0:
+                    self.fibrosis_score_combined = (total_score / available_weight) * 10.0
+                else:
+                    self.fibrosis_score_combined = 50.0
+                
+                self.severity_stage_combined = self._classify_severity(self.fibrosis_score_combined)
+                self.confidence_combined = available_weight
+                
+                if self.verbose:
+                    print(f"\n{'='*70}")
+                    print("COMBINED SCORE (Opzione 2) - RECOMMENDED")
+                    print(f"{'='*70}")
+                    print(f"Fibrosis Score: {self.fibrosis_score_combined:.1f}/100")
+                    print(f"Severity Stage: {self.severity_stage_combined}")
+                    print(f"Confidence: {self.confidence_combined:.0%}")
+        
+        # Set backward compatibility defaults
+        if score_type == 'airway_only':
+            self.fibrosis_score = self.fibrosis_score_airway_only
+            self.severity_stage = self.severity_stage_airway_only
+            self.confidence = self.confidence_airway_only
+        elif score_type == 'combined' and self.fibrosis_score_combined is not None:
+            self.fibrosis_score = self.fibrosis_score_combined
+            self.severity_stage = self.severity_stage_combined
+            self.confidence = self.confidence_combined
+        elif score_type == 'both':
+            # Default to combined if available, otherwise airway_only
+            if self.fibrosis_score_combined is not None:
+                self.fibrosis_score = self.fibrosis_score_combined
+                self.severity_stage = self.severity_stage_combined
+                self.confidence = self.confidence_combined
+            else:
+                self.fibrosis_score = self.fibrosis_score_airway_only
+                self.severity_stage = self.severity_stage_airway_only
+                self.confidence = self.confidence_airway_only
         
         return self.fibrosis_score, self.severity_stage, self.confidence
     
@@ -573,7 +1023,7 @@ class PulmonaryFibrosisScorer:
             f.write("="*70 + "\n\n")
             
             for component, weight in self.weights.items():
-                comp_data = self.component_scores[component]
+                comp_data = self.component_scores.get(component, {})
                 f.write(f"{component.replace('_', ' ').upper()}\n")
                 f.write("-"*70 + "\n")
                 f.write(f"Weight in assessment: {weight:.0%}\n")
@@ -615,15 +1065,43 @@ class PulmonaryFibrosisScorer:
                 'stage': self.severity_stage,
                 'confidence': float(self.confidence)
             },
-            'components': {}
+            'scoring_methods': {}
         }
         
+        # Add airway_only score if computed
+        if self.fibrosis_score_airway_only is not None:
+            report_data['scoring_methods']['airway_only'] = {
+                'fibrosis_score': float(self.fibrosis_score_airway_only),
+                'stage': self.severity_stage_airway_only,
+                'confidence': float(self.confidence_airway_only),
+                'description': 'Pure airway morphometry (Opzione 1)'
+            }
+        
+        # Add combined score if computed
+        if self.fibrosis_score_combined is not None:
+            report_data['scoring_methods']['combined'] = {
+                'fibrosis_score': float(self.fibrosis_score_combined),
+                'stage': self.severity_stage_combined,
+                'confidence': float(self.confidence_combined),
+                'description': 'Airway + Parenchymal (Opzione 2) - RECOMMENDED'
+            }
+        
+        # Components
+        report_data['components'] = {}
+        
         for component, comp_data in self.component_scores.items():
+            # Get weight for this component from both weight sets
+            weight_airway = self.weights_airway_only.get(component, 0.0)
+            weight_combined = self.weights_combined.get(component, 0.0)
+            
             report_data['components'][component] = {
                 'raw_score': float(comp_data.get('raw_score', np.nan)),
-                'weighted_score': float(comp_data.get('raw_score', 5.0) * self.weights[component] * 10.0),
+                'weighted_score_airway': float(comp_data.get('raw_score', 5.0) * weight_airway * 10.0),
+                'weighted_score_combined': float(comp_data.get('raw_score', 5.0) * weight_combined * 10.0),
                 'value': float(comp_data.get('value', np.nan)) if not isinstance(comp_data.get('value'), (list, dict)) else str(comp_data.get('value')),
-                'interpretation': comp_data.get('interpretation', 'N/A')
+                'interpretation': comp_data.get('interpretation', 'N/A'),
+                'weight_airway': float(weight_airway),
+                'weight_combined': float(weight_combined)
             }
         
         with open(json_path, 'w') as f:
@@ -654,7 +1132,7 @@ class PulmonaryFibrosisScorer:
             f.write("Minimal fibrotic changes detected.\n")
             f.write("Early peripheral airway involvement with preserved central airways.\n")
             
-            pc_ratio = self.component_scores['pc_ratio'].get('raw_score', 0)
+            pc_ratio = self.component_scores.get('pc_ratio', {}).get('raw_score', 0)
             if pc_ratio > 5:
                 f.write("Note: Peripheral airway loss is the primary finding.\n")
             
@@ -682,11 +1160,11 @@ class PulmonaryFibrosisScorer:
             f.write("Moderate fibrosis with features suggesting UIP pattern.\n")
             f.write("Significant peripheral airway loss and structural remodeling.\n")
             
-            pc_ratio = self.component_scores['pc_ratio'].get('value', 0.5)
+            pc_ratio = self.component_scores.get('pc_ratio', {}).get('value', 0.5)
             if pc_ratio < 0.25:
                 f.write("ALERT: Severe peripheral airway loss detected (P/C < 0.25)\n")
             
-            coverage = self.component_scores['generation_coverage'].get('value', 1.0)
+            coverage = self.component_scores.get('generation_coverage', {}).get('value', 1.0)
             if coverage < 0.70:
                 f.write("ALERT: Significant airway generation loss (>30% missing)\n")
             
@@ -812,7 +1290,7 @@ class PulmonaryFibrosisScorer:
     def _plot_radar_chart(self, ax):
         """Plot component scores as radar chart."""
         categories = [k.replace('_', ' ').title() for k in self.weights.keys()]
-        scores = [self.component_scores[k].get('raw_score', 5.0) for k in self.weights.keys()]
+        scores = [self.component_scores.get(k, {}).get('raw_score', 5.0) for k in self.weights.keys()]
         
         N = len(categories)
         angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
@@ -839,7 +1317,7 @@ class PulmonaryFibrosisScorer:
     def _plot_component_bars(self, ax):
         """Plot component contributions as bar chart."""
         components = list(self.weights.keys())
-        contributions = [self.component_scores[k].get('raw_score', 5.0) * 
+        contributions = [self.component_scores.get(k, {}).get('raw_score', 5.0) * 
                         self.weights[k] * 10 for k in components]
         
         colors_map = {

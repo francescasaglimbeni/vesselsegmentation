@@ -13,6 +13,7 @@ from skeleton_cleaner import integrate_skeleton_cleaning
 import pandas as pd
 from airway_gap_filler import integrate_gap_filling_into_pipeline
 from fibrosis_scoring import integrate_fibrosis_scoring  # NEW
+from parenchymal_metrics import integrate_parenchymal_metrics  # NEW
 
 
 class CompleteAirwayPipeline:
@@ -64,9 +65,10 @@ class CompleteAirwayPipeline:
         step2_dir = os.path.join(scan_output_dir, "step2_trachea_removal")
         step3_dir = os.path.join(scan_output_dir, "step3_preprocessing")
         step4_dir = os.path.join(scan_output_dir, "step4_analysis")
+        step5_dir = os.path.join(scan_output_dir, "step5_parenchymal_metrics")
         step6_dir = os.path.join(scan_output_dir, "step6_fibrosis_assessment")
         
-        for d in [step1_dir, step2_dir, step3_dir, step4_dir, step6_dir]:
+        for d in [step1_dir, step2_dir, step3_dir, step4_dir, step5_dir, step6_dir]:
             os.makedirs(d, exist_ok=True)
         
         results = {
@@ -318,6 +320,36 @@ class CompleteAirwayPipeline:
                 traceback.print_exc()
 
             # ============================================================
+            # STEP 5.5: PARENCHYMAL METRICS (NEW - INTEGRATED)
+            # ============================================================
+            print("\n" + "="*80)
+            print("STEP 5.5: PARENCHYMAL METRICS")
+            print("="*80)
+            
+            try:
+                parenchymal_metrics = integrate_parenchymal_metrics(
+                    mhd_path,
+                    step5_dir,
+                    fast_segmentation=fast_segmentation,
+                    verbose=True
+                )
+                
+                results['parenchymal_metrics'] = parenchymal_metrics
+                
+                if parenchymal_metrics:
+                    print("\n✓ Parenchymal metrics computed successfully")
+                    print(f"  Mean Lung Density: {parenchymal_metrics['mean_lung_density_HU']:.1f} HU")
+                    print(f"  Histogram Entropy: {parenchymal_metrics['histogram_entropy']:.3f}")
+                else:
+                    print("\n⚠ Parenchymal metrics computation skipped or failed")
+                
+            except Exception as e:
+                print(f"\n⚠ Warning: Could not compute parenchymal metrics: {e}")
+                import traceback
+                traceback.print_exc()
+                results['parenchymal_metrics'] = None
+
+            # ============================================================
             # STEP 6: PULMONARY FIBROSIS ASSESSMENT (NEW)
             # ============================================================
             print("\n" + "="*80)
@@ -458,7 +490,10 @@ class CompleteAirwayPipeline:
             
             f.write("6. ✓ Advanced Clinical Metrics\n\n")
             
-            f.write("7. ✓ Pulmonary Fibrosis Assessment\n")
+            f.write("7. ✓ Parenchymal Metrics (Lung Tissue)\n")
+            f.write(f"   Output: {os.path.join(output_dir, 'step5_parenchymal_metrics')}\n\n")
+            
+            f.write("8. ✓ Pulmonary Fibrosis Assessment\n")
             f.write(f"   Output: {os.path.join(output_dir, 'step6_fibrosis_assessment')}\n\n")
             
             # ============================================================
@@ -527,6 +562,39 @@ class CompleteAirwayPipeline:
                     f.write(f"\n")
                 
                 f.write(f"Generation Coverage: {metrics['generation_coverage']*100:.1f}%\n\n")
+            
+            # ============================================================
+            # PARENCHYMAL METRICS (LUNG TISSUE)
+            # ============================================================
+            if 'parenchymal_metrics' in results and results['parenchymal_metrics'] is not None:
+                f.write("="*80 + "\n")
+                f.write("PARENCHYMAL METRICS (LUNG TISSUE)\n")
+                f.write("="*80 + "\n\n")
+                
+                paren = results['parenchymal_metrics']
+                
+                f.write(f"Mean Lung Density: {paren['mean_lung_density_HU']:.1f} HU\n")
+                if paren['mean_lung_density_HU'] > -700:
+                    f.write(f"  ⚠ ELEVATED - Increased tissue density (possible fibrosis)\n")
+                elif paren['mean_lung_density_HU'] < -850:
+                    f.write(f"  ⚠ LOW - Emphysematous changes\n")
+                else:
+                    f.write(f"  ✓ Normal range\n")
+                f.write(f"\n")
+                
+                f.write(f"Histogram Entropy: {paren['histogram_entropy']:.3f}\n")
+                if paren['histogram_entropy'] > 4.5:
+                    f.write(f"  ⚠ HIGH - Heterogeneous lung tissue (possible fibrosis)\n")
+                elif paren['histogram_entropy'] < 3.5:
+                    f.write(f"  ✓ LOW - Homogeneous lung tissue\n")
+                else:
+                    f.write(f"  ✓ Normal range\n")
+                f.write(f"\n")
+                
+                f.write("Interpretation:\n")
+                f.write("  • Higher density = Denser tissue (fibrosis, consolidation)\n")
+                f.write("  • Higher entropy = More heterogeneous patterns (fibrosis, honeycombing)\n")
+                f.write("\n\n")
             
             # ============================================================
             # PULMONARY FIBROSIS ASSESSMENT (NEW)
@@ -600,6 +668,10 @@ class CompleteAirwayPipeline:
             f.write(f"    - branch_metrics_complete.csv\n")
             f.write(f"    - weibel_generation_analysis.csv\n")
             f.write(f"    - Multiple visualizations\n")
+            f.write(f"  • step5_parenchymal_metrics/   - Lung tissue metrics\n")
+            f.write(f"    - parenchymal_metrics.json\n")
+            f.write(f"    - parenchymal_report.txt\n")
+            f.write(f"    - lung_mask.nii.gz\n")
             f.write(f"  • step6_fibrosis_assessment/   - Fibrosis scoring\n")
             f.write(f"    - fibrosis_assessment_report.txt\n")
             f.write(f"    - fibrosis_assessment.json\n")
@@ -636,6 +708,10 @@ class CompleteAirwayPipeline:
                     f.write(f"✓ {result['scan_name']}\n")
                     f.write(f"  Output: {result['output_dir']}\n")
                     
+                    if 'parenchymal_metrics' in result and result['parenchymal_metrics']:
+                        paren = result['parenchymal_metrics']
+                        f.write(f"  Parenchymal: Density={paren['mean_lung_density_HU']:.1f} HU, Entropy={paren['histogram_entropy']:.3f}\n")
+                    
                     if 'fibrosis_report' in result and result['fibrosis_report']:
                         fib = result['fibrosis_report']['overall']
                         f.write(f"  Fibrosis: {fib['fibrosis_score']:.1f}/100 ({fib['stage']})\n")
@@ -663,7 +739,7 @@ def main():
     # CONFIGURATION
     # ============================================================
     
-    INPUT_PATH = r"X:\Francesca Saglimbeni\tesi\datasets\OSIC_correct"
+    INPUT_PATH = r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\airway_segmentation\test_data"
     OUTPUT_DIR = "output_results_with_fibrosis"
     BATCH_MODE = True
     FAST_SEGMENTATION = False
@@ -681,6 +757,8 @@ def main():
     print(f"\nInput: {INPUT_PATH}")
     print(f"Output: {OUTPUT_DIR}")
     print(f"Batch mode: {BATCH_MODE}")
+    print(f"Airway metrics: ENABLED")
+    print(f"Parenchymal metrics: ENABLED")
     print(f"Fibrosis assessment: ENABLED")
     
     if BATCH_MODE:
@@ -715,8 +793,14 @@ def main():
             print("\n" + "="*80)
             print(" "*30 + "SUCCESS!")
             print("="*80)
-            print(f"\n✓ Complete analysis with fibrosis assessment")
+            print(f"\n✓ Complete analysis with airway + parenchymal metrics + fibrosis assessment")
             print(f"\n📁 Results: {result['output_dir']}")
+            
+            if 'parenchymal_metrics' in result and result['parenchymal_metrics']:
+                paren = result['parenchymal_metrics']
+                print(f"\nParenchymal Metrics:")
+                print(f"  Density: {paren['mean_lung_density_HU']:.1f} HU")
+                print(f"  Entropy: {paren['histogram_entropy']:.3f}")
             
             if 'fibrosis_report' in result and result['fibrosis_report']:
                 fib = result['fibrosis_report']['overall']

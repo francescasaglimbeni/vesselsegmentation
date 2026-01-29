@@ -623,7 +623,7 @@ def main():
     """Entry point per la validazione batch della pipeline"""
     
     # Configurazione percorsi
-    DATA_ROOT = Path(r"X:\Francesca Saglimbeni\tesi\results\results_OSIC")
+    DATA_ROOT = Path(r"X:\Francesca Saglimbeni\tesi\results\results_OSIC_newMetrcis")
     OUTPUT_CSV = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\airway_pipeline_validation_summary.csv")
     
     print(f"\n{'='*80}")
