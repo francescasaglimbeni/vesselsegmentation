@@ -357,9 +357,13 @@ class CompleteAirwayPipeline:
             print("="*80)
 
             try:
+                # Pass parenchymal metrics to fibrosis scoring
+                parenchymal_for_scoring = results.get('parenchymal_metrics', None)
+                
                 scorer, fibrosis_report = integrate_fibrosis_scoring(
                     analyzer,
-                    output_dir=step6_dir
+                    output_dir=step6_dir,
+                    parenchymal_metrics=parenchymal_for_scoring
                 )
                 
                 results['fibrosis_scorer'] = scorer
@@ -616,7 +620,18 @@ class CompleteAirwayPipeline:
                 
                 for comp_name, comp_data in fib_rep['components'].items():
                     f.write(f"\n{comp_name.replace('_', ' ').title()}:\n")
-                    f.write(f"  Contribution: {comp_data['weighted_score']:.1f} points\n")
+                    
+                    # Use the appropriate weighted score based on scoring method used
+                    if 'weighted_score_airway' in comp_data:
+                        weighted = comp_data['weighted_score_airway']
+                    elif 'weighted_score_combined' in comp_data:
+                        weighted = comp_data['weighted_score_combined']
+                    elif 'weighted_score' in comp_data:  # Legacy fallback
+                        weighted = comp_data['weighted_score']
+                    else:
+                        weighted = 0.0
+                    
+                    f.write(f"  Contribution: {weighted:.1f} points\n")
                     f.write(f"  Raw score: {comp_data['raw_score']:.1f}/10\n")
                     f.write(f"  Interpretation: {comp_data['interpretation']}\n")
                 

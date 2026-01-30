@@ -1012,11 +1012,33 @@ class PulmonaryFibrosisScorer:
             f.write(" "*15 + "PULMONARY FIBROSIS ASSESSMENT REPORT\n")
             f.write("="*70 + "\n\n")
             
-            f.write(f"OVERALL ASSESSMENT\n")
+            # DUAL SCORING SYSTEM DISPLAY
+            f.write(f"SCORING METHODS\n")
             f.write("-"*70 + "\n")
-            f.write(f"Fibrosis Score: {self.fibrosis_score:.1f}/100\n")
-            f.write(f"Severity Classification: {self.severity_stage}\n")
-            f.write(f"Assessment Confidence: {self.confidence:.0%}\n\n")
+            
+            # AIRWAY-ONLY SCORE
+            if self.fibrosis_score_airway_only is not None:
+                f.write(f"\n1. AIRWAY-ONLY SCORE (Opzione 1)\n")
+                f.write(f"   Pure airway morphometry\n")
+                f.write(f"   Score: {self.fibrosis_score_airway_only:.1f}/100\n")
+                f.write(f"   Stage: {self.severity_stage_airway_only}\n")
+                f.write(f"   Confidence: {self.confidence_airway_only:.0%}\n")
+            
+            # COMBINED SCORE
+            if self.fibrosis_score_combined is not None:
+                f.write(f"\n2. COMBINED SCORE (Opzione 2) - RECOMMENDED\n")
+                f.write(f"   Airway + Parenchymal metrics\n")
+                f.write(f"   Score: {self.fibrosis_score_combined:.1f}/100\n")
+                f.write(f"   Stage: {self.severity_stage_combined}\n")
+                f.write(f"   Confidence: {self.confidence_combined:.0%}\n")
+            else:
+                f.write(f"\n2. COMBINED SCORE: Not available (no parenchymal metrics)\n")
+            
+            f.write(f"\n" + "-"*70 + "\n")
+            f.write(f"DEFAULT SCORE USED FOR INTERPRETATION:\n")
+            f.write(f"   Score: {self.fibrosis_score:.1f}/100\n")
+            f.write(f"   Stage: {self.severity_stage}\n")
+            f.write(f"   Confidence: {self.confidence:.0%}\n\n")
             
             f.write("="*70 + "\n")
             f.write("DETAILED COMPONENT ANALYSIS\n")
@@ -1473,13 +1495,14 @@ class PulmonaryFibrosisScorer:
         ax.set_title('Key Metrics Summary', fontsize=11, fontweight='bold', pad=10)
 
 
-def integrate_fibrosis_scoring(analyzer, output_dir):
+def integrate_fibrosis_scoring(analyzer, output_dir, parenchymal_metrics=None):
     """
     Integration function for the complete pipeline.
     
     Args:
         analyzer: AirwayGraphAnalyzer instance with computed advanced metrics
         output_dir: Directory to save fibrosis assessment results
+        parenchymal_metrics: Dictionary with parenchymal metrics (optional)
     
     Returns:
         scorer: PulmonaryFibrosisScorer instance
@@ -1502,8 +1525,17 @@ def integrate_fibrosis_scoring(analyzer, output_dir):
     # Create scorer
     scorer = PulmonaryFibrosisScorer(analyzer, verbose=True)
     
-    # Compute overall score
-    fibrosis_score, severity_stage, confidence = scorer.compute_overall_score()
+    # Load parenchymal metrics if provided
+    if parenchymal_metrics is not None:
+        print(f"\n✓ Parenchymal metrics loaded")
+        scorer.parenchymal_metrics = parenchymal_metrics
+        score_type = 'both'  # Compute both airway_only and combined
+    else:
+        print(f"\n⚠ No parenchymal metrics - computing airway_only score")
+        score_type = 'airway_only'
+    
+    # Compute overall score (returns airway_only score for backward compatibility)
+    fibrosis_score, severity_stage, confidence = scorer.compute_overall_score(score_type=score_type)
     
     # Generate comprehensive report
     report = scorer.generate_report(output_dir)

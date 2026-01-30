@@ -5,6 +5,7 @@ from scipy.ndimage import (distance_transform_edt, binary_dilation, binary_erosi
 from skimage.morphology import skeletonize, ball, remove_small_holes, binary_opening
 from skimage.filters import threshold_otsu, threshold_multiotsu
 from collections import deque
+import os
 
 
 class EnhancedAirwayRefinementModule:

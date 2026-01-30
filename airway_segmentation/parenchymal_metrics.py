@@ -283,7 +283,7 @@ def integrate_parenchymal_metrics(mhd_path, output_dir, fast_segmentation=True, 
         
         # Generate summary report
         report_path = output_dir / "parenchymal_report.txt"
-        with open(report_path, 'w') as f:
+        with open(report_path, 'w', encoding='utf-8') as f:
             f.write("="*80 + "\n")
             f.write("PARENCHYMAL METRICS REPORT\n")
             f.write("="*80 + "\n")
