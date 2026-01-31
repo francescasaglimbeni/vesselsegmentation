@@ -16,11 +16,6 @@ warnings.filterwarnings('ignore')
 sns.set_style("whitegrid")
 plt.rcParams['figure.dpi'] = 300
 
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
 VALIDATION_CSV = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\air_val\OSIC_validation.csv")
 RESULTS_ROOT = Path(r"X:\Francesca Saglimbeni\tesi\results\results_OSIC_combined")
 TRAIN_CSV = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_pipeline\OSIC_metrics_validation\train.csv")
@@ -29,22 +24,8 @@ OUTPUT_DIR = Path(r"X:\Francesca Saglimbeni\tesi\vesselsegmentation\validation_p
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-
-# ============================================================
-# ROBUST FVC INTERPOLATION - COMPROMESSO OTTIMALE
-# ============================================================
-
-def interpolate_fvc_percent(patient_data, target_week, window_weeks=15, max_distance=15):
-    """
-    COMPROMESSO OTTIMALE:
-    1. Se misura esatta (±1 settimana) → usa quella
-    2. Se misura nella finestra E ≤ max_distance → logica Fra (più vicino)
-    3. Altrimenti → regressione lineare su tutti i dati
-    
-    Aggiunta filtro max_distance per escludere misure "troppo lontane" anche se nella finestra
-    """
-    
-    # Sort by week
+# INTERPOLATION FUNCTION - MIX BETWEEN FRANCESCO LOGIC AND INTERPOLATION GENERIC
+def interpolate_fvc_percent(patient_data, target_week, window_weeks=15, max_distance=15):    
     patient_data = patient_data.sort_values('Weeks')
     
     # Check for exact match (within 1 week tolerance)
@@ -59,23 +40,22 @@ def interpolate_fvc_percent(patient_data, target_week, window_weeks=15, max_dist
             'n_points_used': 1,
             'distance': abs(closest['Weeks'] - target_week)
         }
-    
-    # COMPROMESSO: cerca misure vicine MA con distanza ≤ max_distance
+
     in_window = patient_data[
         abs(patient_data['Weeks'] - target_week) <= window_weeks
     ]
     
-    # Filtra ulteriormente per max_distance
+    # If there are measurements within the window -> Francesco logic
     if len(in_window) >= 1:
         distances = abs(in_window['Weeks'] - target_week)
         min_distance_idx = distances.idxmin()
         min_distance = distances.min()
         
-        # SE la misura più vicina è ≤ max_distance → logica Fra
+        # If the closest measurement is ≤ max_distance -> Francesco logic
         if min_distance <= max_distance:
             closest = in_window.loc[min_distance_idx]
             
-            # Quality basata su distanza (più stretta)
+            # Quality based on distance (stricter)
             if min_distance <= 3:
                 quality = 'high'
             elif min_distance <= 8:
@@ -92,7 +72,7 @@ def interpolate_fvc_percent(patient_data, target_week, window_weeks=15, max_dist
                 'distance': min_distance
             }
     
-    # SE nessuna misura vicina O misura troppo lontana (>max_distance) → REGRESSIONE
+    # If no close measurement or measurement too far ( > max_distance) -> REGRESSION
     if len(patient_data) >= 2:
         weeks = patient_data['Weeks'].values
         percents = patient_data['Percent'].values
@@ -102,7 +82,6 @@ def interpolate_fvc_percent(patient_data, target_week, window_weeks=15, max_dist
             estimated_value = np.mean(percents)
             distance = abs(weeks[0] - target_week)
             
-            # Quality per regressione semplice
             if distance > 20:
                 quality = 'low'
             elif distance > 10:
@@ -134,7 +113,7 @@ def interpolate_fvc_percent(patient_data, target_week, window_weeks=15, max_dist
         else:
             distance = 0
         
-        # Quality assessment migliorata
+        # Quality assessment
         if distance == 0:  # Interpolation
             if abs(r_value) > 0.85 and len(patient_data) >= 3:
                 quality = 'high'
@@ -143,7 +122,7 @@ def interpolate_fvc_percent(patient_data, target_week, window_weeks=15, max_dist
             else:
                 quality = 'low'
         else:  # Extrapolation
-            if distance > 15:  # Più restrittivo
+            if distance > 15:
                 quality = 'low'
             elif distance > 8:
                 quality = 'medium'
@@ -166,7 +145,7 @@ def interpolate_fvc_percent(patient_data, target_week, window_weeks=15, max_dist
             'distance': distance
         }
     
-    # FAILED
+    # if fail -> no measurements or < 2 measurements
     return {
         'value': np.nan,
         'actual_week': np.nan,
@@ -177,51 +156,31 @@ def interpolate_fvc_percent(patient_data, target_week, window_weeks=15, max_dist
     }
 
 
-def create_interpolated_fvc_dataset(clinical_data):
-    """
-    Create dataset with interpolated FVC values at week 0 and week 52.
-    COMPROMESSO: usa parametri più restrittivi per qualità
-    """
-    print("\n" + "="*80)
-    print("CREATING INTERPOLATED FVC DATASET - COMPROMESSO OTTIMALE")
-    print("="*80)
-    print("Parametri:")
-    print("- Week0: finestra=10, max_distance=8 (più restrittivo per baseline)")
-    print("- Week52: finestra=15, max_distance=10 (leggermente più permissivo per follow-up)")
-    print("- Regressione solo se nessuna misura vicina/sufficientemente vicina")
-    print("="*80)
-    
+def create_interpolated_fvc_dataset(clinical_data):    
     results = []
     
     patient_ids = clinical_data['Patient'].unique()
     print(f"\nProcessing {len(patient_ids)} patients...")
     
-    method_counts = {'week0': {}, 'week52': {}}
-    
     for patient_id in patient_ids:
         patient_data = clinical_data[clinical_data['Patient'] == patient_id]
-        
         demographics = patient_data.iloc[0]
         
-        # Parametri più restrittivi per baseline
+        # Week 0 interpolation
         week0_result = interpolate_fvc_percent(
             patient_data, 
             target_week=0, 
             window_weeks=10,
-            max_distance=8  # Solo misure entro 8 settimane per logica Fra
+            max_distance=8
         )
         
-        # Parametri leggermente più permissivi per follow-up
+        # Week 52 interpolation
         week52_result = interpolate_fvc_percent(
             patient_data,
             target_week=52,
             window_weeks=15,
-            max_distance=10  # Misure entro 10 settimane per logica Fra
+            max_distance=10
         )
-        
-        # Conta metodi
-        method_counts['week0'][week0_result['method']] = method_counts['week0'].get(week0_result['method'], 0) + 1
-        method_counts['week52'][week52_result['method']] = method_counts['week52'].get(week52_result['method'], 0) + 1
         
         # Calculate drop
         if not np.isnan(week0_result['value']) and not np.isnan(week52_result['value']):
@@ -242,7 +201,6 @@ def create_interpolated_fvc_dataset(clinical_data):
             'week0_actual_week': week0_result['actual_week'],
             'week0_method': week0_result['method'],
             'week0_quality': week0_result['quality'],
-            'week0_n_points': week0_result['n_points_used'],
             'week0_distance': week0_result['distance'],
             
             # Week 52 data
@@ -250,7 +208,6 @@ def create_interpolated_fvc_dataset(clinical_data):
             'week52_actual_week': week52_result['actual_week'],
             'week52_method': week52_result['method'],
             'week52_quality': week52_result['quality'],
-            'week52_n_points': week52_result['n_points_used'],
             'week52_distance': week52_result['distance'],
             
             # Calculated values
@@ -258,105 +215,27 @@ def create_interpolated_fvc_dataset(clinical_data):
             'FVC_drop_percent': fvc_drop_percent,
             
             # Data completeness
-            'n_measurements': len(patient_data),
-            'week_range_min': patient_data['Weeks'].min(),
-            'week_range_max': patient_data['Weeks'].max()
+            'n_measurements': len(patient_data)
         })
     
     df = pd.DataFrame(results)
     
     # Report statistics
-    print("\n" + "-"*80)
-    print("INTERPOLATION STATISTICS - COMPROMESSO")
-    print("-"*80)
-    
-    print("\nWEEK 0 (Baseline - più restrittivo):")
-    print(f"  Total patients: {len(df)}")
-    print(f"  Successfully interpolated: {df['FVC_percent_week0'].notna().sum()}")
-    print(f"  Methods (max_distance=8 settimane):")
-    for method, count in method_counts['week0'].items():
-        print(f"    {method:20s}: {count:3d} ({100*count/len(df):5.1f}%)")
-    
-    print(f"\n  Quality:")
-    for quality in ['high', 'medium', 'low', 'failed']:
-        count = (df['week0_quality'] == quality).sum()
-        print(f"    {quality:15s}: {count:3d} ({100*count/len(df):5.1f}%)")
-    
-    print(f"\n  Distance statistics:")
-    valid_dist = df['week0_distance'].dropna()
-    if len(valid_dist) > 0:
-        print(f"    Mean: {valid_dist.mean():.1f} weeks, Max: {valid_dist.max():.1f}")
-        print(f"    ≤3 weeks (high): {(valid_dist <= 3).sum()}")
-        print(f"    ≤8 weeks (medium+): {(valid_dist <= 8).sum()}")
-    
-    print("\nWEEK 52 (Follow-up - leggermente più permissivo):")
-    print(f"  Total patients: {len(df)}")
-    print(f"  Successfully interpolated: {df['FVC_percent_week52'].notna().sum()}")
-    print(f"  Methods (max_distance=10 settimane):")
-    for method, count in method_counts['week52'].items():
-        print(f"    {method:20s}: {count:3d} ({100*count/len(df):5.1f}%)")
-    
-    print(f"\n  Quality:")
-    for quality in ['high', 'medium', 'low', 'failed']:
-        count = (df['week52_quality'] == quality).sum()
-        print(f"    {quality:15s}: {count:3d} ({100*count/len(df):5.1f}%)")
-    
-    print(f"\n  Distance statistics:")
-    valid_dist = df['week52_distance'].dropna()
-    if len(valid_dist) > 0:
-        print(f"    Mean: {valid_dist.mean():.1f} weeks, Max: {valid_dist.max():.1f}")
-        print(f"    ≤5 weeks (high): {(valid_dist <= 5).sum()}")
-        print(f"    ≤10 weeks (medium+): {(valid_dist <= 10).sum()}")
-    
-    # Complete cases
     complete = df.dropna(subset=['FVC_percent_week0', 'FVC_percent_week52'])
-    print(f"\nCOMPLETE CASES (both week0 and week52):")
-    print(f"  Total: {len(complete)} ({100*len(complete)/len(df):.1f}%)")
-    
-    # Quality distribution for complete cases
-    print(f"\n  Quality distribution for complete cases:")
-    high_quality = complete[
-        (complete['week0_quality'] == 'high') & 
-        (complete['week52_quality'] == 'high')
-    ]
-    medium_quality = complete[
-        (complete['week0_quality'].isin(['high', 'medium'])) & 
-        (complete['week52_quality'].isin(['high', 'medium']))
-    ]
-    print(f"    Both high quality: {len(high_quality)}")
-    print(f"    Both high/medium:  {len(medium_quality)}")
-    
-    # Method combination analysis
-    print(f"\n  Method combinations:")
-    method_combinations = complete.groupby(['week0_method', 'week52_method']).size().reset_index(name='count')
-    for _, row in method_combinations.sort_values('count', ascending=False).iterrows():
-        print(f"    {row['week0_method']} + {row['week52_method']}: {row['count']}")
-    
-    # FVC statistics
-    if len(complete) > 0:
-        print(f"\nFVC STATISTICS (complete cases):")
-        print(f"  FVC% week0:  {complete['FVC_percent_week0'].mean():.1f} ± {complete['FVC_percent_week0'].std():.1f}%")
-        print(f"  FVC% week52: {complete['FVC_percent_week52'].mean():.1f} ± {complete['FVC_percent_week52'].std():.1f}%")
-        print(f"  Absolute drop: {complete['FVC_drop_absolute'].mean():.1f} ± {complete['FVC_drop_absolute'].std():.1f} points")
-        print(f"  Relative drop: {complete['FVC_drop_percent'].mean():.1f} ± {complete['FVC_drop_percent'].std():.1f}%")
+    print(f"\nComplete cases (both week0 and week52): {len(complete)} ({100*len(complete)/len(df):.1f}%)")
     
     return df
 
 
-# ============================================================
-# LOAD DATA (nessuna modifica)
-# ============================================================
-
 def load_clinical_data():
     """Load and combine train.csv and test.csv"""
-    print("\nLoading clinical data...")
+    print("Loading clinical data...")
     train = pd.read_csv(TRAIN_CSV)
     test = pd.read_csv(TEST_CSV)
     clinical = pd.concat([train, test], ignore_index=True)
     
     print(f"  Loaded {len(clinical)} clinical records")
     print(f"  Unique patients: {clinical['Patient'].nunique()}")
-    print(f"  Week range: {clinical['Weeks'].min():.0f} to {clinical['Weeks'].max():.0f}")
     
     return clinical
 
@@ -406,14 +285,10 @@ def extract_patient_id(case_name):
     return case_name.replace("_gaussian", "")
 
 
-# ============================================================
-# INTEGRATE DATASETS - MODIFICATA PER ANALISI METODI
-# ============================================================
-
 def integrate_airway_and_fvc(reliable_cases, fvc_df):
     """
     Integrate airway metrics with interpolated FVC data.
-    Aggiunge analisi per metodi diversi.
+    Returns only two datasets: all patients and high/medium quality patients.
     """
     print("\n" + "="*80)
     print("INTEGRATING AIRWAY METRICS WITH FVC DATA")
@@ -455,13 +330,9 @@ def integrate_airway_and_fvc(reliable_cases, fvc_df):
             'FVC_drop_absolute': patient_fvc['FVC_drop_absolute'],
             'FVC_drop_percent': patient_fvc['FVC_drop_percent'],
             
-            # Quality and method info
+            # Quality info
             'week0_quality': patient_fvc['week0_quality'],
             'week52_quality': patient_fvc['week52_quality'],
-            'week0_method': patient_fvc['week0_method'],
-            'week52_method': patient_fvc['week52_method'],
-            'week0_distance': patient_fvc.get('week0_distance', np.nan),
-            'week52_distance': patient_fvc.get('week52_distance', np.nan),
             
             # Airway metrics
             'volume_ml': case_row['volume_ml'],
@@ -480,61 +351,23 @@ def integrate_airway_and_fvc(reliable_cases, fvc_df):
         
         rows.append(row)
     
-    df = pd.DataFrame(rows)
+    df_all = pd.DataFrame(rows)
+    
+    # Filter for high/medium quality patients only
+    df_quality = df_all[
+        (df_all['week0_quality'].isin(['high', 'medium'])) & 
+        (df_all['week52_quality'].isin(['high', 'medium']))
+    ].copy()
     
     print(f"\nIntegrated dataset:")
-    print(f"  Total patients with both airway and FVC data: {len(df)}")
+    print(f"  All patients: {len(df_all)}")
+    print(f"  High/Medium quality patients: {len(df_quality)}")
     
-    # Filtri MULTIPLI per analisi comparativa
-    df_high = df[
-        (df['week0_quality'] == 'high') & 
-        (df['week52_quality'] == 'high')
-    ].copy()
-    
-    df_medium = df[
-        (df['week0_quality'].isin(['high', 'medium'])) & 
-        (df['week52_quality'].isin(['high', 'medium']))
-    ].copy()
-    
-    # NUOVO: Filtro per metodo "nearest" per entrambi (logica Fra pura)
-    df_nearest_both = df[
-        (df['week0_method'] == 'nearest') & 
-        (df['week52_method'] == 'nearest')
-    ].copy()
-    
-    # NUOVO: Filtro per distanza massima
-    df_close_both = df[
-        (df['week0_distance'] <= 5) & 
-        (df['week52_distance'] <= 8)
-    ].copy()
-    
-    print(f"\n  Filtered subsets:")
-    print(f"    High quality (both high): {len(df_high)}")
-    print(f"    Medium+ quality: {len(df_medium)}")
-    print(f"    Both nearest (logica Fra): {len(df_nearest_both)}")
-    print(f"    Both close (dist ≤5/8 weeks): {len(df_close_both)}")
-    
-    # Method analysis
-    print(f"\n  Method distribution:")
-    method_counts = df['week0_method'].value_counts()
-    for method, count in method_counts.items():
-        if pd.notna(method):
-            print(f"    Week0 {method}: {count}")
-    
-    method_counts = df['week52_method'].value_counts()
-    for method, count in method_counts.items():
-        if pd.notna(method):
-            print(f"    Week52 {method}: {count}")
-    
-    return df, df_high, df_medium, df_nearest_both, df_close_both
+    return df_all, df_quality
 
 
-# ============================================================
-# LEAVE-ONE-OUT PREDICTION - MODIFICATA PER MULTIPLI DATASET
-# ============================================================
-
-def leave_one_out_predict(df, feature_name, target_name, model_type='linear'):
-    """Leave-one-out cross-validation"""
+def leave_one_out_predict(df, feature_name, target_name):
+    """Leave-one-out cross-validation for single-feature prediction"""
     
     valid_data = df[[feature_name, target_name]].dropna()
     if len(valid_data) < 5:
@@ -550,12 +383,9 @@ def leave_one_out_predict(df, feature_name, target_name, model_type='linear'):
         y_train = np.delete(y, i)
         X_test = X[i].reshape(1, -1)
         
-        if model_type == 'linear':
-            model = LinearRegression()
-            model.fit(X_train, y_train)
-            y_pred = model.predict(X_test)[0]
-        else:
-            continue
+        model = LinearRegression()
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)[0]
         
         predictions.append(y_pred)
         actuals.append(y[i])
@@ -572,13 +402,6 @@ def leave_one_out_predict(df, feature_name, target_name, model_type='linear'):
     
     pearson_r, pearson_p = pearsonr(actuals, predictions)
     
-    # MAPE migliorato
-    if 'percent' in target_name.lower():
-        with np.errstate(divide='ignore', invalid='ignore'):
-            mape = np.nanmean(np.abs(errors) / np.abs(actuals)) * 100
-    else:
-        mape = np.mean(np.abs(errors))
-    
     return {
         'feature': feature_name,
         'target': target_name,
@@ -589,142 +412,183 @@ def leave_one_out_predict(df, feature_name, target_name, model_type='linear'):
         'mse': mse,
         'mae': mae,
         'rmse': rmse,
-        'mape': mape,
         'r2': r2,
         'pearson_r': pearson_r,
         'pearson_p': pearson_p
     }
 
 
-def run_predictions_on_datasets(datasets, dataset_names, features, targets):
-    """Esegue predizioni su multiple dataset per confronto"""
+def create_single_feature_plots(df_quality, features, output_dir):
+    """
+    Create plots for each feature showing predictions for:
+    1) FVC@week0
+    2) FVC@week52  
+    3) %FVC drop at 1year
+    Includes correlation plots and Bland-Altman plots
+    """
+    plots_dir = output_dir / "single_feature_plots"
+    plots_dir.mkdir(exist_ok=True)
+    
+    targets = ['FVC_percent_week0', 'FVC_percent_week52', 'FVC_drop_percent']
+    
     all_results = []
     
-    for df, name in zip(datasets, dataset_names):
+    for feature in features:
+        if feature not in df_quality.columns:
+            continue
+            
         print(f"\n{'='*60}")
-        print(f"PREDICTIONS ON: {name} (n={len(df)})")
+        print(f"Analyzing feature: {feature}")
         print(f"{'='*60}")
         
-        for target in targets:
-            print(f"\n  Target: {target}")
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        fig.suptitle(f'Single-Feature Prediction: {feature}', fontsize=16, fontweight='bold')
+        
+        for col, target in enumerate(targets):
+            if target not in df_quality.columns:
+                continue
+                
+            result = leave_one_out_predict(df_quality, feature, target)
+            if result is None or result['n_samples'] < 5:
+                continue
+                
+            all_results.append(result)
             
-            for feature in features:
-                if feature not in df.columns:
-                    continue
-                
-                valid_count = df[[feature, target]].dropna().shape[0]
-                if valid_count < 5:
-                    continue
-                
-                result = leave_one_out_predict(df, feature, target, 'linear')
-                if result is None:
-                    continue
-                
-                result['dataset'] = name
-                all_results.append(result)
-                
-                if result['r2'] > 0.1:  # Stampa solo risultati decenti
-                    print(f"    {feature}: R²={result['r2']:.3f}, r={result['pearson_r']:.3f}, n={result['n_samples']}")
+            predictions = result['predictions']
+            actuals = result['actuals']
+            errors = result['errors']
+            
+            # Row 1: Correlation plots
+            ax_corr = axes[0, col]
+            
+            # Scatter plot
+            ax_corr.scatter(actuals, predictions, alpha=0.7, s=60, 
+                           edgecolors='black', linewidth=0.5, color='steelblue')
+            
+            # Perfect prediction line
+            min_val = min(actuals.min(), predictions.min())
+            max_val = max(actuals.max(), predictions.max())
+            ax_corr.plot([min_val, max_val], [min_val, max_val], 
+                        'r--', alpha=0.8, linewidth=2, label='Perfect')
+            
+            # Regression line
+            z = np.polyfit(actuals, predictions, 1)
+            p = np.poly1d(z)
+            x_trend = np.linspace(min_val, max_val, 100)
+            ax_corr.plot(x_trend, p(x_trend), 'g-', alpha=0.8, linewidth=2, label='Regression')
+            
+            ax_corr.set_xlabel(f'Actual {target}', fontsize=12)
+            ax_corr.set_ylabel(f'Predicted {target}', fontsize=12)
+            ax_corr.set_title(f'{target}\nR² = {result["r2"]:.3f}, MAE = {result["mae"]:.2f}', 
+                            fontsize=12, fontweight='bold')
+            ax_corr.legend(loc='best', fontsize=10)
+            ax_corr.grid(True, alpha=0.3)
+            
+            # Add metrics text
+            metrics_text = f'n = {result["n_samples"]}\nMAE = {result["mae"]:.2f}\nRMSE = {result["rmse"]:.2f}'
+            ax_corr.text(0.05, 0.95, metrics_text, transform=ax_corr.transAxes,
+                       fontsize=10, verticalalignment='top',
+                       bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
+            
+            # Row 2: Bland-Altman plots
+            ax_ba = axes[1, col]
+            
+            # Calculate mean and difference
+            means = (actuals + predictions) / 2
+            differences = predictions - actuals
+            
+            # Scatter plot
+            ax_ba.scatter(means, differences, alpha=0.7, s=60, 
+                         edgecolors='black', linewidth=0.5, color='coral')
+            
+            # Mean difference line
+            mean_diff = np.mean(differences)
+            ax_ba.axhline(y=mean_diff, color='blue', linestyle='-', linewidth=2, 
+                         label=f'Mean diff: {mean_diff:.2f}')
+            
+            # ±1.96 SD lines
+            sd_diff = np.std(differences)
+            upper_limit = mean_diff + 1.96 * sd_diff
+            lower_limit = mean_diff - 1.96 * sd_diff
+            
+            ax_ba.axhline(y=upper_limit, color='red', linestyle='--', linewidth=1.5,
+                         label=f'+1.96 SD: {upper_limit:.2f}')
+            ax_ba.axhline(y=lower_limit, color='red', linestyle='--', linewidth=1.5,
+                         label=f'-1.96 SD: {lower_limit:.2f}')
+            
+            ax_ba.set_xlabel('Mean of Actual and Predicted', fontsize=12)
+            ax_ba.set_ylabel('Predicted - Actual', fontsize=12)
+            ax_ba.set_title(f'Bland-Altman: {target}', fontsize=12, fontweight='bold')
+            ax_ba.legend(loc='best', fontsize=9)
+            ax_ba.grid(True, alpha=0.3)
+            
+            # Print results
+            print(f"  {target}: R²={result['r2']:.3f}, MAE={result['mae']:.2f}, n={result['n_samples']}")
+        
+        plt.tight_layout()
+        plot_path = plots_dir / f"{feature}_predictions.png"
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    # Save summary of results
+    if all_results:
+        summary_data = []
+        for result in all_results:
+            summary_data.append({
+                'Feature': result['feature'],
+                'Target': result['target'],
+                'n_samples': result['n_samples'],
+                'R²': result['r2'],
+                'MAE': result['mae'],
+                'RMSE': result['rmse'],
+                'Pearson_r': result['pearson_r'],
+                'Pearson_p': result['pearson_p']
+            })
+        
+        df_summary = pd.DataFrame(summary_data)
+        df_summary = df_summary.sort_values(['Feature', 'Target'])
+        df_summary.to_csv(output_dir / "single_feature_predictions_summary.csv", index=False)
+        
+        print(f"\n✓ Saved prediction summary: single_feature_predictions_summary.csv")
     
     return all_results
 
 
-# ============================================================
-# VISUALIZATION (nessuna modifica sostanziale)
-# ============================================================
-
-def plot_correlation(result, output_path):
-    """Plot predicted vs actual"""
-    
-    predictions = result['predictions']
-    actuals = result['actuals']
-    feature = result['feature']
-    target = result['target']
-    r2 = result['r2']
-    pearson_r = result['pearson_r']
-    dataset = result.get('dataset', '')
-    
-    fig, ax = plt.subplots(figsize=(10, 8))
-    
-    ax.scatter(actuals, predictions, alpha=0.7, s=80, 
-              edgecolors='black', linewidth=1, color='steelblue')
-    
-    min_val = min(actuals.min(), predictions.min())
-    max_val = max(actuals.max(), predictions.max())
-    ax.plot([min_val, max_val], [min_val, max_val], 
-           'r--', alpha=0.8, linewidth=2, label='Perfect prediction')
-    
-    z = np.polyfit(actuals, predictions, 1)
-    p = np.poly1d(z)
-    x_trend = np.linspace(min_val, max_val, 100)
-    ax.plot(x_trend, p(x_trend), 'g-', alpha=0.8, linewidth=2, label='Fitted line')
-    
-    ax.set_xlabel(f'Actual {target}', fontsize=14, fontweight='bold')
-    ax.set_ylabel(f'Predicted {target}', fontsize=14, fontweight='bold')
-    
-    title = f'{feature} → {target}\n{dataset}\nR² = {r2:.3f}, r = {pearson_r:.3f}'
-    ax.set_title(title, fontsize=15, fontweight='bold')
-    
-    ax.legend(loc='best', fontsize=11)
-    ax.grid(True, alpha=0.3)
-    
-    metrics_text = (f'n = {result["n_samples"]}\n'
-                   f'R² = {r2:.3f}\n'
-                   f'MAE = {result["mae"]:.2f}\n'
-                   f'RMSE = {result["rmse"]:.2f}\n'
-                   f'Pearson r = {pearson_r:.3f}')
-    
-    ax.text(0.05, 0.95, metrics_text, transform=ax.transAxes,
-           fontsize=11, verticalalignment='top',
-           bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
-    
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    plt.close()
-
-
-# ============================================================
-# MAIN ANALYSIS - RIVISTA PER COMPROMESSO
-# ============================================================
-
 def main():
     print("\n" + "="*80)
-    print("FVC PREDICTION ANALYSIS - COMPROMESSO OTTIMALE")
+    print("SINGLE-FEATURE FVC PREDICTION ANALYSIS")
     print("="*80)
-    print("Strategia: Logica Fra per misure vicine, regressione per altre")
-    print("Parametri più restrittivi per qualità migliore")
+    print("Analysis: Each feature vs FVC@week0, FVC@week52, %FVC drop")
+    print("Method: Leave-one-out cross-validation with linear regression")
+    print("Output: Correlation plots + Bland-Altman plots for each feature")
     print("="*80)
     
     # Load data
     clinical = load_clinical_data()
     
-    # Create interpolated dataset con compromesso
+    # Create interpolated dataset
     fvc_df = create_interpolated_fvc_dataset(clinical)
     
-    # Save
-    fvc_output = OUTPUT_DIR / "interpolated_fvc_compromise.csv"
+    # Save interpolated data
+    fvc_output = OUTPUT_DIR / "interpolated_fvc_data.csv"
     fvc_df.to_csv(fvc_output, index=False)
-    print(f"\n✓ Interpolated FVC dataset saved: {fvc_output}")
+    print(f"\n✓ Interpolated FVC data saved: {fvc_output}")
     
     # Load airway metrics
     reliable = load_validation_results()
     
-    # Integrate con nuovi filtri
-    df_all, df_high, df_medium, df_nearest, df_close = integrate_airway_and_fvc(reliable, fvc_df)
+    # Integrate datasets (only all and quality-filtered)
+    df_all, df_quality = integrate_airway_and_fvc(reliable, fvc_df)
     
-    # Save tutti i dataset
-    df_all.to_csv(OUTPUT_DIR / "integrated_dataset_all.csv", index=False)
-    df_medium.to_csv(OUTPUT_DIR / "integrated_dataset_medium.csv", index=False)
-    df_nearest.to_csv(OUTPUT_DIR / "integrated_dataset_nearest.csv", index=False)
-    df_close.to_csv(OUTPUT_DIR / "integrated_dataset_close.csv", index=False)
+    # Save datasets
+    df_all.to_csv(OUTPUT_DIR / "all_patients_dataset.csv", index=False)
+    df_quality.to_csv(OUTPUT_DIR / "quality_filtered_dataset.csv", index=False)
     
-    print(f"\n✓ Saved all datasets:")
-    print(f"  All: {len(df_all)}")
-    print(f"  Medium+: {len(df_medium)}")
-    print(f"  Both nearest (Fra): {len(df_nearest)}")
-    print(f"  Both close: {len(df_close)}")
+    print(f"\n✓ Saved datasets:")
+    print(f"  All patients: {len(df_all)} patients")
+    print(f"  High/Medium quality: {len(df_quality)} patients")
     
-    # Features e targets
+    # Define features to analyze
     features = [
         'volume_ml',
         'mean_tortuosity',
@@ -735,99 +599,44 @@ def main():
         'histogram_entropy'
     ]
     
-    targets = [
-        'FVC_percent_week0',
-        'FVC_percent_week52',
-        'FVC_drop_absolute',
-        'FVC_drop_percent'
-    ]
-    
-    # ESECUZIONE PREDIZIONI SU MULTIPLI DATASET
-    datasets = [df_medium, df_nearest, df_close]
-    dataset_names = ['Medium+ Quality', 'Both Nearest (Fra)', 'Both Close']
-    
-    all_results = run_predictions_on_datasets(datasets, dataset_names, features, targets)
-    
-    # Crea summary table comparativa
-    summary_data = []
-    for result in all_results:
-        summary_data.append({
-            'Dataset': result['dataset'],
-            'Feature': result['feature'],
-            'Target': result['target'],
-            'n_samples': result['n_samples'],
-            'R²': result['r2'],
-            'MAE': result['mae'],
-            'RMSE': result['rmse'],
-            'Pearson_r': result['pearson_r'],
-            'Pearson_p': result['pearson_p']
-        })
-    
-    df_summary = pd.DataFrame(summary_data)
-    
-    # Salva summary principale
-    main_summary = df_summary[df_summary['Dataset'] == 'Medium+ Quality'].copy()
-    main_summary = main_summary.sort_values(['Target', 'R²'], ascending=[True, False])
-    main_summary.to_csv(OUTPUT_DIR / "prediction_summary_main.csv", index=False)
-    
-    # Salva summary comparativa
-    df_summary.to_csv(OUTPUT_DIR / "prediction_summary_comparative.csv", index=False)
-    
-    # Genera plots per i migliori risultati
+    # Create single-feature plots using only quality-filtered data
     print(f"\n{'='*80}")
-    print("GENERATING PLOTS FOR BEST RESULTS")
+    print("CREATING SINGLE-FEATURE PREDICTION PLOTS")
     print(f"{'='*80}")
     
-    # Crea directory per plots
-    plots_dir = OUTPUT_DIR / "compromise_plots"
-    plots_dir.mkdir(exist_ok=True)
+    all_results = create_single_feature_plots(df_quality, features, OUTPUT_DIR)
     
-    # Trova i migliori risultati per ogni dataset-target
-    for dataset in dataset_names:
-        dataset_results = [r for r in all_results if r['dataset'] == dataset]
-        
-        for target in targets:
-            target_results = [r for r in dataset_results if r['target'] == target]
-            if not target_results:
-                continue
-            
-            # Prendi il migliore per R²
-            best_result = max(target_results, key=lambda x: x['r2'])
-            
-            if best_result['r2'] > 0.1:  # Solo se decente
-                plot_path = plots_dir / f"{dataset}_{best_result['feature']}_{target}.png"
-                plot_correlation(best_result, plot_path)
-    
-    # ANALISI RIASSUNTIVA FINALE
+    # Final summary
     print(f"\n{'='*80}")
-    print("FINAL ANALYSIS - COMPARISON")
-    print(f"{'='*80}")
-    
-    # Per ogni target, confronta tra dataset
-    for target in targets:
-        print(f"\n{target}:")
-        
-        target_results = df_summary[df_summary['Target'] == target]
-        
-        for dataset in dataset_names:
-            dataset_target = target_results[target_results['Dataset'] == dataset]
-            if len(dataset_target) > 0:
-                best_row = dataset_target.loc[dataset_target['R²'].idxmax()]
-                print(f"  {dataset:25s}: {best_row['Feature']:35s} R²={best_row['R²']:.3f}, n={best_row['n_samples']}")
-    
-    # Consigli finali
-    print(f"\n{'='*80}")
-    print("RECOMMENDATIONS")
-    print(f"{'='*80}")
-    print("1. Per analisi principale: usa 'Medium+ Quality' dataset")
-    print("2. Per verifica robustezza: confronta con 'Both Nearest (Fra)'")
-    print("3. Feature più promettenti: mean_lung_density_HU, histogram_entropy")
-    print("4. Target più predicibili: FVC_percent_week52, FVC_percent_week0")
-    print(f"\n✓ All results saved in: {OUTPUT_DIR}")
-    print(f"✓ Comparative analysis saved in: prediction_summary_comparative.csv")
-    print(f"{'='*80}")
     print("ANALYSIS COMPLETE")
     print(f"{'='*80}")
+    print(f"✓ Datasets saved in: {OUTPUT_DIR}")
+    print(f"✓ Single-feature plots saved in: {OUTPUT_DIR / 'single_feature_plots'}")
+    print(f"✓ Prediction summary saved: single_feature_predictions_summary.csv")
+    
+    # Show best performing features
+    if all_results:
+        print(f"\nTOP PERFORMING FEATURES (by average R² across all targets):")
+        
+        # Group by feature and calculate average R²
+        feature_performance = {}
+        for result in all_results:
+            feature = result['feature']
+            if feature not in feature_performance:
+                feature_performance[feature] = []
+            feature_performance[feature].append(result['r2'])
+        
+        # Calculate and display averages
+        avg_performance = []
+        for feature, r2_values in feature_performance.items():
+            avg_r2 = np.mean(r2_values)
+            avg_performance.append((feature, avg_r2, len(r2_values)))
+        
+        # Sort by average R²
+        avg_performance.sort(key=lambda x: x[1], reverse=True)
+        
+        for feature, avg_r2, n_targets in avg_performance[:5]:  # Top 5
+            print(f"  {feature:35s}: Avg R² = {avg_r2:.3f} (across {n_targets} targets)")
 
 
 if __name__ == "__main__":
