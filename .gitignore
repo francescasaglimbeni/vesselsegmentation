@@ -15,3 +15,4 @@ validation_pipeline/score_validation
 validation_pipeline/OSIC_metrics_validation/venv
 validation_pipeline/OSIC_metrics_validation/analyzis_base_results/
 validation_pipeline/OSIC_metrics_validation/single_feature_prediction/
+validation_pipeline/OSIC_metrics_validation/improved_prediction/
